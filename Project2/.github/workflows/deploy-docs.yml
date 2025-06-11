@@ -23,10 +23,14 @@ jobs:
         run: |
           cd Project2
           make html
-
+          
+      - name: Copy build files to root
+        run: |
+          cp -r Project2/build/html/* .
+          
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: Project2/build/html
+          publish_dir: .
           publish_branch: gh-pages
