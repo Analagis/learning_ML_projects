@@ -21,12 +21,12 @@ jobs:
 
       - name: Build documentation
         run: |
-          cd source
+          cd Project2
           make html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: source/build/html
+          publish_dir: Project2/build/html
           publish_branch: gh-pages

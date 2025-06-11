@@ -47,4 +47,4 @@ exclude_patterns = []
 html_theme = 'furo'
 html_static_path = ['_static']
 
-html_baseurl = "https://analagis.github.io/learning_ML_projects/Project2/build/html/" 
+html_baseurl = "https://analagis.github.io/learning_ML_projects/" 
