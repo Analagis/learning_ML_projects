@@ -25,13 +25,11 @@ bathrooms, bedrooms, interest_level, and 20 new binary features.
 
 3. Data Splitting Methods
 Custom implementations of:
-
 Simple train-test split (test_size)
 Train-validation-test split (val_size, test_size)
 Date-based splits using date_split, validation_date, test_date
 4. Cross-Validation Schemes
 Implemented and compared with sklearn:
-
 K-Fold CV
 Grouped K-Fold CV (group_field)
 Stratified K-Fold CV (stratify_field)
