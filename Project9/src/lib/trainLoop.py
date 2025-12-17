@@ -1,6 +1,8 @@
 import torch
 from torch import nn, optim
 from sklearn.metrics import roc_auc_score
+import numpy as np
+import torch.nn.functional as F
 
 class Trainer:
     def __init__(
@@ -17,7 +19,8 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
 
-        self.criterion = nn.BCEWithLogitsLoss()
+        # МУЛЬТИкласс: логиты (N, num_classes), целочисленные таргеты 0..C-1
+        self.criterion = nn.CrossEntropyLoss()  # [web:79]
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
     def train_one_epoch(self):
@@ -26,10 +29,11 @@ class Trainer:
 
         for images, targets in self.train_loader:
             images = images.to(self.device)
-            targets = targets.to(self.device).float().view(-1, 1)
+            # для CrossEntropyLoss нужны long-интовые классы (0..C-1)
+            targets = targets.to(self.device).long()
 
             self.optimizer.zero_grad()
-            logits = self.model(images)
+            logits = self.model(images)              # (batch, num_classes)
             loss = self.criterion(logits, targets)
             loss.backward()
             self.optimizer.step()
@@ -48,18 +52,29 @@ class Trainer:
         with torch.no_grad():
             for images, targets in self.val_loader:
                 images = images.to(self.device)
-                targets = targets.to(self.device).float().view(-1, 1)
+                targets = targets.to(self.device).long()
 
-                logits = self.model(images)
+                logits = self.model(images)          # (batch, num_classes)
                 loss = self.criterion(logits, targets)
                 running_loss += loss.item() * images.size(0)
 
-                probs = torch.sigmoid(logits)
-                all_targets.extend(targets.cpu().numpy().ravel())
-                all_probs.extend(probs.cpu().numpy().ravel())
+                probs = F.softmax(logits, dim=1)     # (batch, num_classes)
+
+                all_targets.append(targets.cpu().numpy())  # (batch,)
+                all_probs.append(probs.cpu().numpy())       # (batch, num_classes)
+
+        all_targets = np.concatenate(all_targets, axis=0)   # (N,)
+        all_probs   = np.concatenate(all_probs, axis=0)     # (N, num_classes)
 
         epoch_loss = running_loss / len(self.val_loader.dataset)
-        roc_auc = roc_auc_score(all_targets, all_probs)
+
+        # МУЛЬТИклассовый ROC AUC: y_true=(N,), y_score=(N, C) [web:84][web:90]
+        roc_auc = roc_auc_score(
+            all_targets,
+            all_probs,
+            multi_class="ovr",
+            average="macro"
+        )
         return epoch_loss, roc_auc
 
     def fit(self, num_epochs):
