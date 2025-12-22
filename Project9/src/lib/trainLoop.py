@@ -4,6 +4,8 @@ from sklearn.metrics import roc_auc_score
 import numpy as np
 import torch.nn.functional as F
 
+from mixup_cutmix import mixup_data, cutmix_data, mix_criterion
+
 class Trainer:
     def __init__(
         self,
@@ -11,7 +13,11 @@ class Trainer:
         train_loader,
         val_loader,
         lr=1e-3,
-        device=None
+        device=None,
+        mix_mode: str = "none",    # "none", "mixup", "cutmix", "both"   
+        mixup_alpha: float = 0.4,
+        cutmix_alpha: float = 1.0,
+        mix_prob: float = 0.5,
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
@@ -24,6 +30,46 @@ class Trainer:
         self.criterion = nn.CrossEntropyLoss() 
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
+        self.mix_mode = mix_mode
+        self.mixup_alpha = mixup_alpha
+        self.cutmix_alpha = cutmix_alpha
+        self.mix_prob = mix_prob
+
+    def _apply_mix(self, images, targets):
+        """Вернуть (images, y_a, y_b, lam, is_mixed)."""
+        if self.mix_mode == "none":
+            return images, targets, targets, 1.0, False
+
+        if np.random.rand() > self.mix_prob:
+            return images, targets, targets, 1.0, False
+
+        if self.mix_mode == "mixup":
+            images, y_a, y_b, lam = mixup_data(
+                images, targets, alpha=self.mixup_alpha
+            )
+            return images, y_a, y_b, lam, True
+
+        if self.mix_mode == "cutmix":
+            images, y_a, y_b, lam = cutmix_data(
+                images, targets, alpha=self.cutmix_alpha
+            )
+            return images, y_a, y_b, lam, True
+
+        if self.mix_mode == "both":
+            # случайно выбрать MixUp или CutMix
+            if np.random.rand() < self.mix_prob:
+                images, y_a, y_b, lam = mixup_data(
+                    images, targets, alpha=self.mixup_alpha
+                )
+            else:
+                images, y_a, y_b, lam = cutmix_data(
+                    images, targets, alpha=self.cutmix_alpha
+                )
+            return images, y_a, y_b, lam, True
+
+        # на случай неожиданных значений
+        return images, targets, targets, 1.0, False
+
     def train_one_epoch(self):
         self.model.train()
         running_loss = 0.0
@@ -33,9 +79,16 @@ class Trainer:
             # для CrossEntropyLoss нужны long-интовые классы (0..C-1)
             targets = targets.to(self.device).long()
 
+            images_mixed, y_a, y_b, lam, is_mixed = self._apply_mix(images, targets)
+
             self.optimizer.zero_grad()
-            logits = self.model(images)              # (batch, num_classes)
-            loss = self.criterion(logits, targets)
+            logits = self.model(images_mixed)              # (batch, num_classes)
+
+            if is_mixed:
+                loss = mix_criterion(self.criterion, logits, y_a, y_b, lam)
+            else:
+                loss = self.criterion(logits, targets)
+
             loss.backward()
             self.optimizer.step()
 
