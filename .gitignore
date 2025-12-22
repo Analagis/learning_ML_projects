@@ -56,3 +56,4 @@ catboost_info
 __pycache__
 model
 data
+model_weights
