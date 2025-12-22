@@ -15,12 +15,13 @@ class Trainer:
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
+        print("Trainer device:", self.device)
 
         self.train_loader = train_loader
         self.val_loader = val_loader
 
         # МУЛЬТИкласс: логиты (N, num_classes), целочисленные таргеты 0..C-1
-        self.criterion = nn.CrossEntropyLoss()  # [web:79]
+        self.criterion = nn.CrossEntropyLoss() 
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
     def train_one_epoch(self):
@@ -68,7 +69,7 @@ class Trainer:
 
         epoch_loss = running_loss / len(self.val_loader.dataset)
 
-        # МУЛЬТИклассовый ROC AUC: y_true=(N,), y_score=(N, C) [web:84][web:90]
+        # МУЛЬТИклассовый ROC AUC: y_true=(N,), y_score=(N, C)
         roc_auc = roc_auc_score(
             all_targets,
             all_probs,
