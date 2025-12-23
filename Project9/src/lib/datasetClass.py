@@ -9,7 +9,7 @@ from albumentations.pytorch import ToTensorV2
 
 
 TRAIN_TRANSFORM = A.Compose([
-    A.Resize(64, 64),
+    A.Resize(224, 224),
     ToTensorV2()
 ])
 
