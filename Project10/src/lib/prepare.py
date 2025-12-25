@@ -19,4 +19,4 @@ def build_vocab(names_processed):
     token2id = {ch: i for i, ch in enumerate(tokens)}
     id2token = {i: ch for ch, i in token2id.items()}
     
-    return token2id, id2token
+    return tokens, token2id, id2token
