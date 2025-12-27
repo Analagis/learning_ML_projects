@@ -12,7 +12,6 @@ def generate_name(
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ):
     model.eval()
-    device = torch.device(device)
 
     sos_token = "<"
     eos_token = ">"

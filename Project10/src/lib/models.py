@@ -41,14 +41,12 @@ class RecurrentModel(nn.Module):
         # 6. Сигмоида для вероятности пола
         self.gender_activation = nn.Sigmoid()
 
-    def init_hidden(self, batch_size, device=None):
+    def init_hidden(self, batch_size, device=torch.device("cuda" if torch.cuda.is_available() else "cpu")):
         """
         Инициализация скрытого состояния для RNN.
         Для vanilla RNN и GRU достаточно одного тензора (batch, hidden_size).
         Для LSTM здесь потом можно будет вернуть кортеж (h0, c0).
         """
-        if device is None:
-            device = next(self.parameters()).device
         h0 = torch.zeros(batch_size, self.hidden_size, device=device)
         return h0
 
@@ -81,6 +79,91 @@ class RecurrentModel(nn.Module):
 
         return token_logits, gender_logit, gender_prob, last_hidden
 
+    @torch.no_grad()
+    def generate_name(
+        self,
+        token2id,
+        id2token,
+        start_text="",
+        max_len=20,
+        temperature=1.0,
+        sos_token="<",
+        eos_token=">",
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+    ):
+        """
+        Стохастическая генерация имени:
+        - сэмплирование следующего токена по softmax(logits / temperature)
+        - можно задать начало имени (start_text)
+        - temperature управляет степенью случайности
+        """
+        self.eval()
+
+        # 1. начальная последовательность токенов
+        if start_text:
+            init_tokens = list(start_text.lower())
+        else:
+            init_tokens = [sos_token]
+
+        # проверка, что все есть в словаре
+        for ch in init_tokens:
+            if ch not in token2id:
+                raise ValueError(f"Символ '{ch}' отсутствует в словаре токенов")
+
+        # 2. индексы и прогрев скрытого состояния
+        input_ids = [token2id[ch] for ch in init_tokens]
+        input_tensor = torch.tensor(
+            input_ids, dtype=torch.long, device=device
+        ).unsqueeze(0)  # (1, seq_len)
+
+        hidden = self.init_hidden(batch_size=1, device=device)
+        token_logits, _, _, hidden = self(input_tensor, hidden=hidden)
+
+        generated_tokens = init_tokens.copy()
+
+        # 3. пошаговая генерация
+        for _ in range(max_len):
+            last_token_id = token2id[generated_tokens[-1]]
+            last_input = torch.tensor([[last_token_id]], dtype=torch.long, device=device)  # (1, 1)
+
+            token_logits, _, _, hidden = self(last_input, hidden=hidden)
+            logits = token_logits[:, -1, :].squeeze(0)          # (vocab_size,)
+
+            # temperature + softmax
+            logits = logits / temperature
+            probs = F.softmax(logits, dim=-1)                   # (vocab_size,)
+
+            next_id = torch.multinomial(probs, num_samples=1).item()
+            next_token = id2token[next_id]
+
+            if next_token == eos_token:
+                break
+
+            generated_tokens.append(next_token)
+
+        # 4. убираем служебные токены
+        name_chars = [ch for ch in generated_tokens if ch not in (sos_token, eos_token)]
+        name = "".join(name_chars)
+
+        return name
+    
+    @torch.no_grad()
+    def predict_gender(self, x, device=torch.device("cuda" if torch.cuda.is_available() else "cpu")):
+        """
+        x: тензор индексов токенов (batch, seq_len)
+
+        Возвращает:
+        - probs: тензор (batch, 1) — вероятность "класс 1" (например, girl)
+        - logits: тензор (batch, 1) — сырые логиты
+        """
+        self.eval()
+        x = x.to(device)
+
+        with torch.no_grad():
+            # token_logits нам тут не нужны
+            _, gender_logit, gender_prob, _ = self(x)
+
+        return gender_prob, gender_logit
 
 class VanillaRNNBlock(nn.Module):
     """

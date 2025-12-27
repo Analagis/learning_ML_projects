@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torch.optim as optim
+import matplotlib.pyplot as plt
 
 
 class NameTrainer:
@@ -16,7 +17,7 @@ class NameTrainer:
         beta=1.0     # вес для gender
     ):
         self.model = model.to(device)
-        self.optimizer = optimizer if optimizer else optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+        self.optimizer = optimizer if optimizer else optim.Adam(model.parameters())
         self.device = device
 
         self.use_next_char_loss = use_next_char_loss
@@ -145,3 +146,59 @@ class NameTrainer:
         avg_gender = total_gender / max(1, n_gender) if n_gender > 0 else None
 
         return avg_loss, avg_next, avg_gender
+    
+
+    def fit(self, train_loader, valid_loader, num_epochs, plot=False):
+        history = {
+            'train_next': [],
+            'valid_next': [],
+            'train_gender': [],
+            'valid_gender': [],
+        }
+
+        for epoch in range(1, num_epochs + 1):
+            train_loss, train_next, train_gender = self.train_epoch(train_loader)
+            valid_loss, valid_next, valid_gender = self.eval_epoch(valid_loader)
+
+            # сохраняем всё, что есть
+            history['train_next'].append(train_next)
+            history['valid_next'].append(valid_next)
+            history['train_gender'].append(train_gender)
+            history['valid_gender'].append(valid_gender)
+
+            # аккуратный принт – в зависимости от включённых лоссов
+            msg = f"Epoch {epoch}:"
+
+            if self.use_next_char_loss and train_next is not None and valid_next is not None:
+                msg += f"next_train={train_next:.4f}, next_valid={valid_next:.4f}"
+
+            if self.use_gender_loss and train_gender is not None and valid_gender is not None:
+                msg += f", gender_train={train_gender:.4f}, gender_valid={valid_gender:.4f}"
+
+            if epoch % 10 == 0 or epoch == 1 or epoch == num_epochs:
+                print(msg)
+
+        if plot:
+            # один рисунок, но до двух графиков (next и gender)
+            plt.figure(figsize=(10, 4))
+
+            # next-letter loss
+            if self.use_next_char_loss and any(v is not None for v in history['train_next']):
+                train_next = [v for v in history['train_next']]
+                valid_next = [v for v in history['valid_next']]
+                plt.plot(train_next, label='train_next')
+                plt.plot(valid_next, label='valid_next')
+
+            # gender loss
+            if self.use_gender_loss and any(v is not None for v in history['train_gender']):
+                train_gender = [v for v in history['train_gender']]
+                valid_gender = [v for v in history['valid_gender']]
+                plt.plot(train_gender, label='train_gender')
+                plt.plot(valid_gender, label='valid_gender')
+
+            plt.xlabel('Эпоха')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.title('Сходимость loss (train/valid)')
+            plt.tight_layout()
+            plt.show()
