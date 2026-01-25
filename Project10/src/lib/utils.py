@@ -1,5 +1,7 @@
 from sklearn.metrics import roc_auc_score
 import torch
+import torch.nn.functional as F
+from collections import Counter
 
 def build_vocab(names_processed):
     """
@@ -55,8 +57,85 @@ def compute_roc_auc_splits(model, train_loader, valid_loader, test_loader, devic
     roc_valid = roc_auc_score(y_valid, p_valid)
     roc_test  = roc_auc_score(y_test,  p_test)
 
-    print(
-    f"train_roc_auc: {roc_train:.3f}\n"
-    f"valid_roc_auc: {roc_valid:.3f}\n"
-    f"test_roc_auc:  {roc_test:.3f}"
-)
+    return roc_train, roc_valid, roc_test
+
+def calculate_perplexity(logits, targets, ignore_index=-100):
+    """
+    Расчет Perplexity двумя способами:
+    1. ppl_ce: Через torch.nn.functional.cross_entropy (стандартный, стабильный).
+    2. ppl_manual: Вручную через вероятности (softmax -> gather -> log -> exp).
+    
+    Args:
+        logits (torch.Tensor): Логиты модели, форма (Batch, Seq_Len, Vocab_Size) или (N, Vocab_Size)
+        targets (torch.Tensor): Истинные индексы токенов, форма (Batch, Seq_Len) или (N,)
+        ignore_index (int): Индекс токена (паддинга), который игнорируется при расчете.
+        
+    Returns:
+        dict: {'ppl_ce': float, 'ppl_manual': float}
+    """
+    # 1. Приводим к плоскому виду: (N, Vocab_Size) и (N,)
+    if logits.dim() == 3:
+        logits = logits.view(-1, logits.size(-1))
+    if targets.dim() == 2:
+        targets = targets.view(-1)
+        
+    # --- Способ 1: Через CrossEntropyLoss (Stable & Fast) ---
+    # CrossEntropyLoss уже содержит LogSoftmax + NLLLoss
+    ce_loss = F.cross_entropy(logits, targets, ignore_index=ignore_index, reduction='mean')
+    ppl_ce = torch.exp(ce_loss).item()
+    
+    # --- Способ 2: Вручную (Educational) ---
+    # a) Считаем вероятности для каждого слова в словаре
+    probs = F.softmax(logits, dim=-1)  # (N, Vocab)
+    
+    # b) Выбираем вероятности, соответствующие истинным таргетам
+    # Нам нужны только те позиции, где target != ignore_index
+    mask = targets != ignore_index
+    valid_targets = targets[mask]
+    valid_probs_matrix = probs[mask]
+    
+    # gather берет из каждой строки вероятность правильного класса
+    # (N_valid, 1)
+    target_probs = valid_probs_matrix.gather(1, valid_targets.unsqueeze(1)).squeeze()
+    
+    # c) Negative Log Likelihood
+    # Добавляем epsilon для стабильности, чтобы log(0) не дал -inf
+    eps = 1e-9
+    nll = -torch.log(target_probs + eps)
+    
+    # d) Усредняем и берем экспоненту
+    mean_nll = nll.mean()
+    ppl_manual = torch.exp(mean_nll).item()
+    
+    return {'ppl_ce': ppl_ce, 'ppl_manual': ppl_manual}
+
+def evaluate_baselines(test_loader, vocab_size, token2id, device='cuda'):
+    all_targets = []
+    char_counter = Counter()
+    total_chars = 0
+    pad_idx = token2id.get('<PAD>', 0)
+
+    for x_batch, _ in test_loader:
+        targets = x_batch[:, 1:].to(device)
+        all_targets.append(targets)
+        flat = targets.flatten().tolist()
+        non_pad = [c for c in flat if c != pad_idx]
+        char_counter.update(non_pad)
+        total_chars += len(non_pad)
+
+    full_targets = torch.cat(all_targets, dim=0).view(-1)
+    
+    # Случайная модель
+    print(f"Random Model PPL: {vocab_size:.4f}")
+
+    # Частотная модель
+    freq_probs = torch.zeros(vocab_size).to(device)
+    for tid, count in char_counter.items():
+        if tid < vocab_size: freq_probs[tid] = count / total_chars
+    
+    freq_logits = torch.log(freq_probs + 1e-9).unsqueeze(0).expand(len(full_targets), -1)
+    
+    loss = torch.nn.functional.cross_entropy(freq_logits, full_targets, ignore_index=pad_idx)
+    freq_ppl = torch.exp(loss).item()
+    
+    print(f"Frequency Model PPL: {freq_ppl:.3f}")

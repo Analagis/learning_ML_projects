@@ -202,3 +202,5 @@ class NameTrainer:
             plt.title('Сходимость loss (train/valid)')
             plt.tight_layout()
             plt.show()
+
+        return history
