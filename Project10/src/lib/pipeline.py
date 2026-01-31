@@ -238,7 +238,7 @@ class ModelRunner:
                     y_batch = y_batch.to(self.device)
 
                     # 1. Получаем выход модели
-                    output = model(x_batch)
+                    output = model(x_batch[:, :-1])
                     
                     # Обработка разных типов выхода (кортеж или тензор)
                     if isinstance(output, tuple):
@@ -248,7 +248,7 @@ class ModelRunner:
 
                     # 2. Сохраняем логиты и таргеты
                     # Переносим на CPU, чтобы не забить память GPU
-                    all_logits.append(logits[:, :-1, :].cpu())
+                    all_logits.append(logits.cpu())
                     all_targets.append(x_batch[:, 1:].cpu())
             
             # Объединяем все батчи в один большой тензор
@@ -263,7 +263,7 @@ class ModelRunner:
             # Предполагаем, что она определена глобально или как статический метод
             # Если она внутри класса, добавьте self. перед вызовом
 
-            ppl_metrics = calculate_perplexity(full_logits, full_targets, ignore_index=0) # 0 обычно паддинг
+            ppl_metrics = calculate_perplexity(full_logits, full_targets, ignore_index=0)
             
             ppl_results[block_name] = ppl_metrics
 

@@ -65,6 +65,8 @@ class RecurrentModel(nn.Module):
         emb = self.embedding(x)                 # (batch, seq_len, embedding_dim)
         emb = self.dropout(emb)
 
+        if hidden is None:
+            hidden = self.init_hidden(x.size(0), x.device)
         # 2. Прогон через RNN-блок
         outputs, last_hidden = self.rnn(emb, hidden)  # outputs: (batch, seq_len, hidden_size)
 
@@ -89,6 +91,7 @@ class RecurrentModel(nn.Module):
         temperature=1.0,
         sos_token="<",
         eos_token=">",
+        pad_token='.',
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     ):
         """
@@ -142,7 +145,7 @@ class RecurrentModel(nn.Module):
             generated_tokens.append(next_token)
 
         # 4. убираем служебные токены
-        name_chars = [ch for ch in generated_tokens if ch not in (sos_token, eos_token)]
+        name_chars = [ch for ch in generated_tokens if ch not in (sos_token, eos_token, pad_token)]
         name = "".join(name_chars)
 
         return name

@@ -79,7 +79,7 @@ def calculate_perplexity(logits, targets, ignore_index=-100):
     if targets.dim() == 2:
         targets = targets.view(-1)
         
-    # --- Способ 1: Через CrossEntropyLoss (Stable & Fast) ---
+    # --- Способ 1: Через CrossEntropyLoss ---
     # CrossEntropyLoss уже содержит LogSoftmax + NLLLoss
     ce_loss = F.cross_entropy(logits, targets, ignore_index=ignore_index, reduction='mean')
     ppl_ce = torch.exp(ce_loss).item()

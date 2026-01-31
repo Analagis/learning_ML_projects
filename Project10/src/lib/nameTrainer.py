@@ -17,7 +17,7 @@ class NameTrainer:
         beta=1.0     # вес для gender
     ):
         self.model = model.to(device)
-        self.optimizer = optimizer if optimizer else optim.Adam(model.parameters())
+        self.optimizer = optimizer if optimizer else optim.Adam(model.parameters(), lr=1e-4)
         self.device = device
 
         self.use_next_char_loss = use_next_char_loss
@@ -52,7 +52,7 @@ class NameTrainer:
             logits = logits.reshape(-1, logits.size(-1))
             targets = targets.reshape(-1)
 
-            loss_next = F.cross_entropy(logits, targets)
+            loss_next = F.cross_entropy(logits, targets, ignore_index = 0)
             total_loss = total_loss + self.alpha * loss_next
 
         # ----- loss для пола -----
