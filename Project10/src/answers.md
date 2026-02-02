@@ -25,3 +25,4 @@ Many-to-many (последовательность → последовател�
 
 
 
+![Imagine you have an RNN that classifies the language of incoming words. Illustrate with blocks how this model will process the word "Hello".](rnn_graph.png)
