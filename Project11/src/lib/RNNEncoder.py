@@ -30,6 +30,7 @@ class RNNEncoder(nn.Module):
         embedded = self.embedding(x)
         _, hidden = self.gru(embedded)
         return hidden  # Финальное скрытое состояние [1, batch, hidden_size]
+    
 
 # --- Training Loop с Early Stopping ---
 def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr=0.001, patience=10):
@@ -60,7 +61,6 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
             
             loss = criterion(logits, targets)
             
-            loss = criterion(logits, targets)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient clipping
             optimizer.step()
@@ -144,3 +144,15 @@ def generate_names(model, sos_idx, eos_idx, pad_idx, eng_idx2char, num_names=10,
         names.append(name)
     
     return names
+
+# Загружаем обученный Encoder
+def load_encoder(vocab_size, checkpoint_path='best_encoder.pth', embed_size=128, hidden_size=256):
+    """Загружает обученный Encoder"""
+    encoder = RNNEncoder(vocab_size, embed_size, hidden_size)
+    
+    checkpoint = torch.load(checkpoint_path)
+    encoder.load_state_dict(checkpoint)
+    encoder.eval()  # Freeze!
+    
+    print(f"✅ Encoder загружен")
+    return encoder
