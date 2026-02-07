@@ -6,9 +6,13 @@ from tqdm import tqdm
 import numpy as np
 
 class RNNEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_size=64, hidden_size=64, num_layers=1):
+    def __init__(self, vocab_size, embed_size=64, hidden_size=64, num_layers=1, pos_encoding=None, max_len=13):
         super().__init__()
         self.hidden_size = hidden_size
+        self.embed_size = embed_size
+        self.pos_encoding = pos_encoding  # 'none', 'sine', 'trainable'
+        self.max_len = max_len
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Embedding: символ -> вектор
         self.embedding = nn.Embedding(vocab_size, embed_size)
@@ -18,10 +22,19 @@ class RNNEncoder(nn.Module):
         
         # Linear: скрытое состояние -> вероятности букв (для языковой модели)
         self.fc_out = nn.Linear(hidden_size, vocab_size)
+
+        self.pe = None
+        if pos_encoding == 'sine':
+            self.pe = self._create_sine_pe()
+        elif pos_encoding == 'trainable':
+            self.pe = nn.Parameter(torch.zeros(max_len, embed_size, device=self.device))
         
     def forward(self, x, hidden=None):
         # x: [batch, seq_len]
         embedded = self.embedding(x)  # [batch, seq_len, embed_size]
+        if self.pe is not None:
+            embedded = embedded + self.pe[:x.size(1)].unsqueeze(0).to(x.device)
+
         output, hidden = self.gru(embedded, hidden)  # [batch, seq_len, hidden], hidden: [1, batch, hidden]
         logits = self.fc_out(output)  # [batch, seq_len, vocab_size]
         return logits, hidden
@@ -29,11 +42,27 @@ class RNNEncoder(nn.Module):
     def get_encoder_state(self, x):
         embedded = self.embedding(x)
         _, hidden = self.gru(embedded)
+
+        if self.pe is not None:
+            embedded = embedded + self.pe[:x.size(1)].unsqueeze(0).to(x.device)
+
         return hidden  # Финальное скрытое состояние [1, batch, hidden_size]
+    
+    def _create_sine_pe(self):
+        """Sine/Cosine positional encoding"""
+        pe = torch.zeros(self.max_len, self.embed_size)
+        position = torch.arange(0, self.max_len).unsqueeze(1).float()
+        
+        div_term = torch.exp(torch.arange(0, self.embed_size, 2).float() * 
+                            -(torch.log(torch.tensor(10000.0)) / self.embed_size))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe
     
 
 # --- Training Loop с Early Stopping ---
-def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr=0.001, patience=10):
+def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr=0.001, patience=10, suffix=""):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     
@@ -95,7 +124,7 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
         if avg_valid_loss < best_valid_loss:
             best_valid_loss = avg_valid_loss
             patience_counter = 0
-            torch.save(model.state_dict(), 'best_encoder.pth')
+            torch.save(model.state_dict(), f'best_encoder_{suffix}.pth')
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -103,7 +132,7 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
                 break
     
     # Загружаем лучшую модель
-    model.load_state_dict(torch.load('best_encoder.pth'))
+    model.load_state_dict(torch.load(f'best_encoder_{suffix}.pth'))
     return train_losses, valid_losses
 
 # --- Генерация имен ---

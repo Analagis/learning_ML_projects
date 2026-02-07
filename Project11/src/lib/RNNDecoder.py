@@ -12,9 +12,12 @@ from RNNEncoder import RNNEncoder
 
 
 class RNNDecoder(nn.Module):
-    def __init__(self, rus_vocab_size, embed_size=32, hidden_size=64):
+    def __init__(self, rus_vocab_size, embed_size=64, hidden_size=64, pos_encoding=None, max_len=21):
         super().__init__()
         self.hidden_size = hidden_size
+        self.pos_encoding = pos_encoding
+        self.max_len = max_len
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Embedding для русских букв
         self.embedding = nn.Embedding(rus_vocab_size, embed_size)
@@ -24,20 +27,38 @@ class RNNDecoder(nn.Module):
         
         # Выходной слой
         self.fc_out = nn.Linear(hidden_size, rus_vocab_size)
+
+        self.pe = None
+        if pos_encoding == 'sine':
+            self.register_buffer('pe', self._create_sine_pe(embed_size, max_len))
+        elif pos_encoding == 'trainable':
+            self.pe = nn.Parameter(torch.zeros(max_len, embed_size, device=self.device))
     
     def forward(self, x, hidden):
 
         embedded = self.embedding(x)  
+
+        if self.pe is not None:
+            embedded = embedded + self.pe[:x.size(1)].unsqueeze(0).to(x.device)
+
         output, hidden = self.gru(embedded, hidden)  
         logits = self.fc_out(output) 
         return logits, hidden
     
+    def _create_sine_pe(self, d_model, max_len):
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
+                            -(torch.log(torch.tensor(10000.0)) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe
+    
     def translate(self, encoder, eng_name_indices, rus_char2idx, rus_idx2char, max_len):
         """Детерминированный перевод (argmax, не стохастический)"""
-        device = next(self.parameters()).device
         
         # Encode английское имя
-        eng_tensor = torch.tensor([eng_name_indices], dtype=torch.long, device=device)
+        eng_tensor = torch.tensor([eng_name_indices], dtype=torch.long, device=self.device)
         encoder_hidden = encoder.get_encoder_state(eng_tensor)  # [1, 1, hidden_size]
 
         if len(encoder_hidden.shape) == 2:
@@ -45,7 +66,7 @@ class RNNDecoder(nn.Module):
         
         # Decoder начинает с <SOS>
         sos_idx = rus_char2idx['<']
-        input_token = torch.tensor([[sos_idx]], device=device)
+        input_token = torch.tensor([[sos_idx]], device=self.device)
         
         # Инициализируем скрытое состояние для декодера
         decoder_hidden = encoder_hidden  # Начальное состояние = выход энкодера
@@ -59,7 +80,7 @@ class RNNDecoder(nn.Module):
                 break
                 
             translated_indices.append(next_token)
-            input_token = torch.tensor([[next_token]], device=device)
+            input_token = torch.tensor([[next_token]], device=self.device)
         
         # Убираем SOS
         translation = ''.join([rus_idx2char[idx] for idx in translated_indices[1:]])
@@ -101,9 +122,9 @@ def compute_perplexity(model, encoder, test_loader, rus_char2idx):
     return perplexity
 
 def train_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2char, rus_idx2char, eng_char2idx, rus_char2idx, 
-                  X_train_t, X_valid_t, max_len, epochs=100, lr=0.001, patience=15, embed_size=128, hidden_size=256):
+                  X_train_t, X_valid_t, max_len, epochs=100, lr=0.001, patience=15, embed_size=128, hidden_size=256, suffix=""):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    encoder.to(device)
+    encoder.to()
     encoder.eval()  # Важно: eval режим для энкодера!
     for param in encoder.parameters(): # Замораживаем веса
         param.requires_grad = False
@@ -251,7 +272,7 @@ def train_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2c
         if avg_valid_loss < best_valid_loss:
             best_valid_loss = avg_valid_loss
             patience_counter = 0
-            torch.save(decoder.state_dict(), 'best_decoder.pth')
+            torch.save(decoder.state_dict(), f'best_decoder_{suffix}.pth')
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -259,7 +280,7 @@ def train_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2c
                 break
     
     # Загружаем лучшую модель
-    decoder.load_state_dict(torch.load('best_decoder.pth'))
+    decoder.load_state_dict(torch.load(f'best_decoder_{suffix}.pth'))
     return decoder, train_losses, valid_losses
 
 
