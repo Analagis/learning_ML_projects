@@ -101,7 +101,7 @@ def compute_perplexity(model, encoder, test_loader, rus_char2idx):
     return perplexity
 
 def train_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2char, rus_idx2char, eng_char2idx, rus_char2idx, 
-                  X_valid_t, y_valid_t, max_len, epochs=100, lr=0.001, patience=15, embed_size=128, hidden_size=256):
+                  X_train_t, X_valid_t, max_len, epochs=100, lr=0.001, patience=15, embed_size=128, hidden_size=256):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     encoder.to(device)
     encoder.eval()  # Важно: eval режим для энкодера!
@@ -117,7 +117,7 @@ def train_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2c
     best_valid_loss = float('inf')
     patience_counter = 0
     
-    print("Training Decoder (Encoder frozen)...")
+    print("Training Decoder...")
     
     # Получаем индексы SOS и EOS для teacher forcing
     sos_idx = rus_char2idx['<']
@@ -229,6 +229,23 @@ def train_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2c
         valid_losses.append(avg_valid_loss)
         
         print(f'Epoch {epoch+1}: Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
+
+         # Печать перевода
+        if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
+            print("=== TRAIN SET ===")
+            encoder.eval()
+            decoder.eval()
+            
+            # Берем первые 5 примеров из train
+            check_translation(X_train_t[:5], eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n=5)
+            
+            print("\n=== VALID SET ===")
+            check_translation(X_valid_t[:5], eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n=5)
+            print("-" * 50)
+            
+            # Возвращаем в train режим
+            decoder.train()
+            encoder.eval()
        
         # Early stopping
         if avg_valid_loss < best_valid_loss:
@@ -247,9 +264,11 @@ def train_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2c
 
 
 def check_translation(X_test_t, eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n):
+    translations = []
     for i in range(n):
         eng_indices = [idx.item() for idx in X_test_t[i] if idx.item() not in [eng_char2idx['.'], eng_char2idx['<'], eng_char2idx['>']]]
         eng_name = ''.join([eng_idx2char[idx] for idx in eng_indices])
         rus_pred = decoder.translate(encoder, eng_indices, rus_char2idx, rus_idx2char, max_len)
-        print(f"  {eng_name:10s} → {rus_pred}")
+        translations.append(f"{eng_name:10s}→{rus_pred}")
+    print(" | ".join(translations))
         

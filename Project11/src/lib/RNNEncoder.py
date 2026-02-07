@@ -6,7 +6,7 @@ from tqdm import tqdm
 import numpy as np
 
 class RNNEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_size=32, hidden_size=64, num_layers=1):
+    def __init__(self, vocab_size, embed_size=64, hidden_size=64, num_layers=1):
         super().__init__()
         self.hidden_size = hidden_size
         

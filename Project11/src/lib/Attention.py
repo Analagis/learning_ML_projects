@@ -9,7 +9,7 @@ import numpy as np
 import torch.nn.functional as F
 
 class AttentionDecoder(nn.Module):
-    def __init__(self, rus_vocab_size, embed_size=64, hidden_size=128, eng_max_len=30):
+    def __init__(self, rus_vocab_size, embed_size=64, hidden_size=64, eng_max_len=30):
         super().__init__()
         self.hidden_size = hidden_size
         self.eng_max_len = eng_max_len
@@ -80,7 +80,7 @@ class AttentionDecoder(nn.Module):
     
     def translate(self, encoder, eng_name_indices, rus_char2idx, rus_idx2char, encoder_outputs=None, max_len=30):
         """Детерминированный перевод с attention"""
-        device = next(self.parameters()).device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Encode
         eng_tensor = torch.tensor([eng_name_indices], dtype=torch.long, device=device)
@@ -113,6 +113,51 @@ class AttentionDecoder(nn.Module):
                              if idx != rus_char2idx['.']])
         return translation
 
+def compute_perplexity_attention(model, encoder, test_loader, rus_char2idx):
+    """Правильный Perplexity = exp(-log P(sequence))"""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.eval()
+    encoder.eval()
+    
+    total_nll = 0
+    total_tokens = 0
+    
+    with torch.no_grad():
+        for batch_X, batch_y in test_loader:
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
+            # Encoder outputs
+            embedded = encoder.embedding(batch_X)
+            encoder_outputs, encoder_hidden = encoder.gru(embedded)
+            
+            batch_size = batch_X.size(0)
+            sos_idx = rus_char2idx['<']
+            
+            # INFERENCE: генерируем как при переводе!
+            decoder_input = torch.full((batch_size, 1), sos_idx, device=device)
+            decoder_hidden = encoder_hidden
+            
+            for t in range(batch_y.size(1) - 1):  # До реальной длины target
+                logits, decoder_hidden, _ = model(decoder_input, encoder_outputs, decoder_hidden)
+                
+                # Log-probability реального токена
+                target = batch_y[:, t + 1]  # Сдвиг (игнорируем SOS)
+                log_probs = F.log_softmax(logits[:, -1, :], dim=-1)  # Последний timestep
+                nll_loss = -log_probs.gather(1, target.unsqueeze(1)).squeeze()
+                
+                # Считаем только непустые токены
+                valid_mask = (target != rus_char2idx['.'])
+                total_nll += nll_loss[valid_mask].sum().item()
+                total_tokens += valid_mask.sum().item()
+                
+                # Следующий input = предсказанный токен (inference!)
+                decoder_input = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(1)
+    
+    avg_nll = total_nll / total_tokens
+    perplexity = np.exp(avg_nll)
+    return perplexity
+
+
 def extract_encoder_outputs(encoder, batch_X):
     """Извлекает ВСЕ скрытые состояния encoder'а"""
     embedded = encoder.embedding(batch_X)
@@ -120,7 +165,7 @@ def extract_encoder_outputs(encoder, batch_X):
     return encoder_outputs
 
 def train_attention_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2char, rus_idx2char, 
-                          eng_char2idx, rus_char2idx, X_valid_t, y_valid_t, epochs=100, lr=0.0003, patience=15):
+                          eng_char2idx, rus_char2idx, X_train_t, X_valid_t, max_len, epochs=100, lr=0.0003, patience=15):
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     encoder.to(device)
@@ -198,6 +243,24 @@ def train_attention_decoder(encoder, train_loader, valid_loader, rus_vocab_size,
         valid_losses.append(avg_valid_loss)
         
         print(f'Epoch {epoch+1}: Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
+
+         # Печать перевода
+        if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
+            print("=== TRAIN SET ===")
+            encoder.eval()
+            decoder.eval()
+            
+            # Берем первые 5 примеров из train
+            check_translation(X_train_t[:5], eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n=5)
+            
+            print("\n=== VALID SET ===")
+            check_translation(X_valid_t[:5], eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n=5)
+            print("-" * 50)
+            
+            # Возвращаем в train режим
+            decoder.train()
+            encoder.eval()
+
         
         # Early stopping
         if avg_valid_loss < best_valid_loss:
@@ -206,3 +269,13 @@ def train_attention_decoder(encoder, train_loader, valid_loader, rus_vocab_size,
     
     decoder.load_state_dict(torch.load('best_attention_decoder.pth'))
     return decoder, train_losses, valid_losses
+
+
+def check_translation(X_test_t, eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n):
+    translations = []
+    for i in range(n):
+        eng_indices = [idx.item() for idx in X_test_t[i] if idx.item() not in [eng_char2idx['.'], eng_char2idx['<'], eng_char2idx['>']]]
+        eng_name = ''.join([eng_idx2char[idx] for idx in eng_indices])
+        rus_pred = decoder.translate(encoder, eng_indices, rus_char2idx, rus_idx2char, max_len)
+        translations.append(f"{eng_name:10s}→{rus_pred}")
+    print(" | ".join(translations))
