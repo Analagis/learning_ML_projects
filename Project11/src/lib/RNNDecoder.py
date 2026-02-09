@@ -31,7 +31,7 @@ class RNNDecoder(nn.Module):
 
         self.pe = None
         if pos_encoding == 'sine':
-            self.register_buffer('pe', self._create_sine_pe(hidden_size, max_len))
+            self.pe = self._create_sine_pe(hidden_size, max_len)
         elif pos_encoding == 'trainable':
             self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
     
@@ -117,14 +117,14 @@ def train_decoder_step(decoder, encoder, batch_X, batch_y, pad_idx, criterion, s
 
 @timer
 def train_decoder(encoder, train_loader, valid_loader, config,
-                  X_train_t, X_valid_t, epochs=100, lr=0.001, patience=15, embed_size=128, hidden_size=256, suffix=""):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                  X_train_t, X_valid_t, epochs=100, lr=0.001, patience=15, suffix="", **kwargs):
+    device = encoder.device
     encoder.to()
     encoder.eval()  # Важно: eval режим для энкодера!
     for param in encoder.parameters(): # Замораживаем веса
         param.requires_grad = False
     
-    decoder = RNNDecoder(config['rus_vocab_size'], embed_size, hidden_size).to(device)
+    decoder = RNNDecoder(config['rus_vocab_size'], **kwargs).to(device)
     
     criterion = nn.CrossEntropyLoss(ignore_index=config['pad_idx'])
     optimizer = optim.Adam(decoder.parameters(), lr=lr)  # Только decoder

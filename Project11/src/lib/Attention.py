@@ -40,7 +40,7 @@ class AttentionDecoder(nn.Module):
 
         self.pe = None
         if pos_encoding == 'sine':
-            self.register_buffer('pe', self._create_sine_pe(hidden_size, max_len))
+            self.pe = self._create_sine_pe(hidden_size, max_len)
         elif pos_encoding == 'trainable':
             self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
     
@@ -290,7 +290,7 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
             check_translation(X_train_t[:5], config['eng_char2idx'], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
             
             print("=== VALID SET ===")
-            check_translation(X_train_t[:5], config['eng_char2idx'], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
+            check_translation(X_valid_t[:5], config['eng_char2idx'], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
             print("-" * 50)
             
             # Возвращаем в train режим
@@ -311,25 +311,66 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
     decoder.load_state_dict(torch.load(f'best_models/best_attention_decoder{suffix}.pth'))
     return decoder, train_losses, valid_losses
 
-def plot_attention_heatmap(eng_name, rus_name, attention_weights_list):
-
+def plot_attention_heatmap(eng_name, rus_name, attention_weights_list, max_length=21):
+    """
+    eng_name: исходное имя с < и >
+    rus_name: переведенное имя с < и >
+    attention_weights_list: список весов внимания для каждого шага декодера
+    """
+    
     eng_letters = list(eng_name)
     rus_letters = list(rus_name)
     
-    # attention_matrix: [len(rus), len(eng)]
-    attention_matrix = np.array(attention_weights_list[:len(rus_letters)])
+    # Определяем максимальную длину для паддинга
+    max_eng_len = max_length
+    max_rus_len = max_length
     
-    plt.figure(figsize=(10, len(rus_letters)*0.5))
-    sns.heatmap(attention_matrix, annot=True, fmt='.2f', 
-                xticklabels=eng_letters, yticklabels=rus_letters,
-                cmap='YlOrRd')
-    plt.title(f'Attention: "{eng_name}" → "{rus_name}"')
-    plt.xlabel('English letters')
-    plt.ylabel('Russian letters')
+    # Создаем матрицу внимания с паддингом
+    attention_matrix = np.zeros((max_rus_len, max_eng_len))
+    
+    # Заполняем актуальными значениями
+    for i in range(len(rus_letters)):
+        if i < len(attention_weights_list):
+            # Берем веса для текущего шага декодера
+            step_weights = attention_weights_list[i]
+            
+            # Обрезаем или дополняем веса до max_eng_len
+            if len(step_weights) > max_eng_len:
+                attention_matrix[i, :] = step_weights[:max_eng_len]
+            else:
+                attention_matrix[i, :len(step_weights)] = step_weights
+                # Остальное остается 0 (паддинг)
+    
+    # Создаем метки с паддингом
+    eng_labels = eng_letters + [''] * (max_rus_len - len(eng_letters))
+    rus_labels = rus_letters + [''] * (max_rus_len - len(rus_letters))
+    
+    # Создаем фигуру с верхними метками для английских букв
+    fig, ax = plt.subplots(figsize=(max_rus_len*0.2, max_rus_len*0.2))
+    
+    # Отображаем heatmap
+    im = ax.imshow(attention_matrix.T, 
+                   cmap='viridis', aspect='auto')
+    
+    # Устанавливаем метки
+    ax.set_yticks(range(max_rus_len))
+    ax.set_yticklabels(eng_labels)
+    ax.set_ylabel('English letters (Source)')
+    
+    ax.set_xticks(range(max_rus_len))
+    ax.set_xticklabels(rus_labels)
+    ax.set_xlabel('Russian letters (Target)')
+    
+    # Добавляем сверху название перевода
+    plt.title(f'Attention Map: "{eng_name}" → "{rus_name}"', pad=20)
+    
+    # Добавляем цветовую шкалу
+    plt.colorbar(im, ax=ax)
+        
     plt.tight_layout()
     plt.show()
 
-def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_char2idx, rus_idx2char, max_len=20):
+def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_char2idx, rus_idx2char, max_len=21):
     """Визуализация attention weights для одного имени"""
     device = next(decoder.parameters()).device
     encoder.eval()
@@ -350,6 +391,13 @@ def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_ch
         logits, hidden, attn_weights = decoder(input_token, encoder_outputs, encoder_hidden)
         next_token = torch.argmax(logits[0, 0, :], dim=-1).item()
         
+        current_weights = torch.zeros(max_len, device=device)
+        actual_eng_len = len(eng_name_indices)
+        if attn_weights.size(1) >= actual_eng_len:
+            current_weights[:actual_eng_len] = attn_weights[0, :actual_eng_len]
+        else:
+            current_weights[:attn_weights.size(1)] = attn_weights[0, :]
+
         attention_weights_list.append(attn_weights[0].cpu().detach().numpy())  # [eng_len]
         generated_tokens.append(next_token)
         
@@ -360,8 +408,7 @@ def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_ch
         encoder_hidden = hidden
     
     # Русское имя (без SOS)
-    rus_name = ''.join([rus_idx2char[idx] for idx in generated_tokens[1:] 
-                       if idx != rus_char2idx['.']])
+    rus_name = ''.join([rus_idx2char[idx] for idx in generated_tokens])
     eng_name = ''.join([eng_idx2char[idx] for idx in eng_name_indices])
     
     return eng_name, rus_name, attention_weights_list
