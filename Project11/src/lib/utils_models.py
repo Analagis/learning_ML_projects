@@ -7,12 +7,12 @@ import numpy as np
 import time
 from functools import wraps
 
-def check_translation(X_test_t, eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n):
+def check_translation(X_test_t, eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, y_max_len, n):
     translations = []
     for i in range(n):
         eng_indices = [idx.item() for idx in X_test_t[i] if idx.item() not in [eng_char2idx['.'], eng_char2idx['<'], eng_char2idx['>']]]
         eng_name = ''.join([eng_idx2char[idx] for idx in eng_indices])
-        rus_pred = decoder.translate(encoder, eng_indices, rus_char2idx, rus_idx2char, max_len)
+        rus_pred = decoder.translate(encoder, eng_indices, rus_char2idx, rus_idx2char, y_max_len)
         translations.append(f"{eng_name:10s}→{rus_pred}")
     print(" | ".join(translations))
 
@@ -70,6 +70,6 @@ def timer(func):
         elapsed = time.time() - start_time
         hours, remainder = divmod(int(elapsed), 3600)
         mins, secs = divmod(remainder, 60)
-        print(f"Время обучения {epochs} эпох: {hours:02d}:{mins:02d}:{secs:02d}")
+        print(f"\033[94mВремя обучения {epochs} эпох: {hours:02d}:{mins:02d}:{secs:02d}\033[0m")
         return result
     return wrapper

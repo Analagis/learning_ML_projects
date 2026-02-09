@@ -14,7 +14,7 @@ import time
 from utils_models import check_translation, timer
 
 class AttentionDecoder(nn.Module):
-    def __init__(self, rus_vocab_size, embed_size=64, hidden_size=64, eng_max_len=13, pos_encoding=None, max_len=21, multi_head = False, n_heads = 3):
+    def __init__(self, rus_vocab_size, hidden_size=64, eng_max_len=13, pos_encoding=None, max_len=21, multi_head = False, n_heads = 3):
         super().__init__()
         self.hidden_size = hidden_size
         self.eng_max_len = eng_max_len
@@ -23,15 +23,15 @@ class AttentionDecoder(nn.Module):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Embedding для русских букв
-        self.embedding = nn.Embedding(rus_vocab_size, embed_size)
+        self.embedding = nn.Embedding(rus_vocab_size, hidden_size)
 
         if multi_head:
-            self.mha = MultiHeadAttention(embed_size, hidden_size, n_heads=n_heads, device=self.device)
+            self.mha = MultiHeadAttention(hidden_size, hidden_size, n_heads=n_heads, device=self.device)
         
         # GRU Decoder
-        self.gru = nn.GRU(embed_size + hidden_size, hidden_size, batch_first=True)
+        self.gru = nn.GRU(2*hidden_size, hidden_size, batch_first=True)
         
-        # Attention механизм (ручной!)
+        # Attention механизм
         self.attention = nn.Linear(hidden_size * 2, hidden_size)
         self.attention_combine = nn.Linear(hidden_size + hidden_size, hidden_size)
         
@@ -40,9 +40,9 @@ class AttentionDecoder(nn.Module):
 
         self.pe = None
         if pos_encoding == 'sine':
-            self.register_buffer('pe', self._create_sine_pe(embed_size, max_len))
+            self.register_buffer('pe', self._create_sine_pe(hidden_size, max_len))
         elif pos_encoding == 'trainable':
-            self.pe = nn.Parameter(torch.zeros(max_len, embed_size, device=self.device))
+            self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
     
     def forward(self, decoder_input, encoder_outputs, encoder_hidden):
         """
@@ -200,17 +200,16 @@ class MultiHeadAttention(nn.Module):
         return output, attn_weights
 
 @timer
-def train_attention_decoder(encoder, train_loader, valid_loader, rus_vocab_size, eng_idx2char, rus_idx2char, 
-                          eng_char2idx, rus_char2idx, X_train_t, X_valid_t, max_len, epochs=100, lr=0.0003, patience=15, suffix="", **kwargs):
+def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train_t, X_valid_t, epochs=100, lr=0.0003, patience=15, suffix="", **kwargs):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     encoder.to(device)
     encoder.train()
     for param in encoder.parameters():
         param.requires_grad = False
     
-    decoder = AttentionDecoder(rus_vocab_size, hidden_size=encoder.hidden_size, **kwargs).to(device)
+    decoder = AttentionDecoder(config['rus_vocab_size'], hidden_size=encoder.hidden_size, **kwargs).to(device)
     
-    criterion = nn.CrossEntropyLoss(ignore_index=rus_char2idx['.'])
+    criterion = nn.CrossEntropyLoss(ignore_index=config['pad_idx'])
     optimizer = optim.Adam(decoder.parameters(), lr=lr)
     
     train_losses, valid_losses = [], []
@@ -225,7 +224,7 @@ def train_attention_decoder(encoder, train_loader, valid_loader, rus_vocab_size,
         train_loss = 0
         num_batches = 0
         
-        for batch_X, batch_y in tqdm(train_loader, desc=f'Epoch {epoch+1}'):
+        for batch_X, batch_y in train_loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             
             optimizer.zero_grad()
@@ -281,17 +280,17 @@ def train_attention_decoder(encoder, train_loader, valid_loader, rus_vocab_size,
         
          # Печать перевода
         if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
-            print(f'Epoch {epoch+1}: Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
+            print(f'\033[92mEpoch {epoch+1}:\033[0m Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
 
             print("=== TRAIN SET ===")
             encoder.eval()
             decoder.eval()
             
             # Берем первые 5 примеров из train
-            check_translation(X_train_t[:5], eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n=5)
+            check_translation(X_train_t[:5], config['eng_char2idx'], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
             
-            print("\n=== VALID SET ===")
-            check_translation(X_valid_t[:5], eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, max_len, n=5)
+            print("=== VALID SET ===")
+            check_translation(X_train_t[:5], config['eng_char2idx'], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
             print("-" * 50)
             
             # Возвращаем в train режим

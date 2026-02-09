@@ -9,19 +9,18 @@ import time
 from utils_models import timer
 
 class RNNEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_size=64, hidden_size=64, num_layers=1, pos_encoding=None, max_len=13):
+    def __init__(self, vocab_size, hidden_size=64, num_layers=1, pos_encoding=None, max_len=13):
         super().__init__()
         self.hidden_size = hidden_size
-        self.embed_size = embed_size
         self.pos_encoding = pos_encoding  # 'none', 'sine', 'trainable'
         self.max_len = max_len
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Embedding: символ -> вектор
-        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.embedding = nn.Embedding(vocab_size, hidden_size)
         
         # GRU: последовательность символов -> скрытое состояние
-        self.gru = nn.GRU(embed_size, hidden_size, num_layers, batch_first=True)
+        self.gru = nn.GRU(hidden_size, hidden_size, num_layers, batch_first=True)
         
         # Linear: скрытое состояние -> вероятности букв (для языковой модели)
         self.fc_out = nn.Linear(hidden_size, vocab_size)
@@ -30,11 +29,11 @@ class RNNEncoder(nn.Module):
         if pos_encoding == 'sine':
             self.pe = self._create_sine_pe()
         elif pos_encoding == 'trainable':
-            self.pe = nn.Parameter(torch.zeros(max_len, embed_size, device=self.device))
+            self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
         
     def forward(self, x, hidden=None):
         # x: [batch, seq_len]
-        embedded = self.embedding(x)  # [batch, seq_len, embed_size]
+        embedded = self.embedding(x)  # [batch, seq_len, hidden_size]
         if self.pe is not None:
             embedded = embedded + self.pe[:x.size(1)].unsqueeze(0).to(x.device)
 
@@ -128,7 +127,7 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
         valid_losses.append(avg_valid_loss)
         
         if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
-            print(f'Epoch {epoch+1}: Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
+            print(f'\033[92mEpoch {epoch+1}:\033[0m Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
         
         # Early Stopping
         if avg_valid_loss < best_valid_loss:
@@ -148,7 +147,7 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
 
 # --- Генерация имен ---
 @torch.no_grad()
-def generate_names(model, sos_idx, eos_idx, pad_idx, eng_idx2char, num_names=10, max_len=20, temperature=0.8):
+def generate_names(model, config, num_names=10, temperature=0.8):
     device = next(model.parameters()).device
     model.eval()
     
@@ -162,25 +161,25 @@ def generate_names(model, sos_idx, eos_idx, pad_idx, eng_idx2char, num_names=10,
         hidden = torch.zeros(num_layers, batch_size, hidden_size).to(device)
         
         # Старт с SOS
-        input_seq = torch.tensor([[sos_idx]], device=device)  # [1, 1]
+        input_seq = torch.tensor([[config["sos_idx"]]], device=device)  # [1, 1]
         generated = []
         
-        for _ in range(max_len):
+        for _ in range(config['eng_vocab_size']):
             logits, hidden = model(input_seq, hidden)  # hidden обновляется!
             next_token_logits = logits[0, -1, :] / temperature
             probs = torch.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probs, 1).item()
             
-            if next_token == pad_idx or next_token == sos_idx:
-                next_token = eos_idx
+            if next_token == config["pad_idx"] or next_token == config["sos_idx"]:
+                next_token = config["eos_idx"]
 
-            if next_token == eos_idx:
+            if next_token == config["eos_idx"]:
                 break
                 
             generated.append(next_token)
             input_seq = torch.tensor([[next_token]], device=device)
         
-        name = ''.join([eng_idx2char[idx] for idx in generated])
+        name = ''.join([config["eng_idx2char"][idx] for idx in generated])
         names.append(name)
     
     return names
