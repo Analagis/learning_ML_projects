@@ -4,6 +4,9 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import numpy as np
+import time
+
+from utils_models import timer
 
 class RNNEncoder(nn.Module):
     def __init__(self, vocab_size, embed_size=64, hidden_size=64, num_layers=1, pos_encoding=None, max_len=13):
@@ -41,12 +44,22 @@ class RNNEncoder(nn.Module):
     
     def get_encoder_state(self, x):
         embedded = self.embedding(x)
-        _, hidden = self.gru(embedded)
 
         if self.pe is not None:
             embedded = embedded + self.pe[:x.size(1)].unsqueeze(0).to(x.device)
 
+        _, hidden = self.gru(embedded)
         return hidden  # Финальное скрытое состояние [1, batch, hidden_size]
+    
+    def get_encoder_outputs(self, x):
+        """Извлекает ВСЕ скрытые состояния encoder'а"""
+        embedded = self.embedding(x)
+
+        if self.pe is not None:
+            embedded = embedded + self.pe[:x.size(1)].unsqueeze(0).to(x.device)
+
+        encoder_outputs, _ = self.gru(embedded)  # [B, eng_seq_len, hidden]
+        return encoder_outputs
     
     def _create_sine_pe(self):
         """Sine/Cosine positional encoding"""
@@ -60,12 +73,22 @@ class RNNEncoder(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
         return pe
     
+def compute_loss_batch(model, batch_X, criterion):
+    """Вычисляет loss для одного батча language modeling"""
+    logits, _ = model(batch_X)
+    target_tokens = batch_X[:, 1:]
+    
+    logits = logits[:, :-1, :].reshape(-1, logits.size(-1))
+    targets = target_tokens.reshape(-1)
+    
+    return criterion(logits, targets)    
 
 # --- Training Loop с Early Stopping ---
+@timer
 def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr=0.001, patience=10, suffix=""):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
-    
+
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)  # Игнорируем PAD
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
@@ -77,18 +100,12 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
         # Train
         model.train()
         train_loss = 0
-        for batch_X, _ in tqdm(train_loader, desc=f'Epoch {epoch+1}'):
+        for batch_X, _ in train_loader:
             batch_X = batch_X.to(device)
             
             optimizer.zero_grad()
-            logits, _ = model(batch_X)  
-            input_tokens = batch_X[:, :-1]        # [B, seq_len-1]  
-            target_tokens = batch_X[:, 1:]        # [B, seq_len-1]
-            
-            logits = logits[: , :-1, :].reshape(-1, logits.size(-1))  # [B*(T-1), V]
-            targets = target_tokens.reshape(-1)                        # [B*(T-1)]
-            
-            loss = criterion(logits, targets)
+
+            loss = compute_loss_batch(model, batch_X, criterion)
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient clipping
@@ -102,29 +119,22 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
         with torch.no_grad():
             for batch_X, _ in valid_loader:
                 batch_X = batch_X.to(device)
-                logits, _ = model(batch_X)
 
-                input_tokens = batch_X[:, :-1]        # [B, seq_len-1]  
-                target_tokens = batch_X[:, 1:]        # [B, seq_len-1]
-                
-                logits = logits[: , :-1, :].reshape(-1, logits.size(-1))  # [B*(T-1), V]
-                targets = target_tokens.reshape(-1)                        # [B*(T-1)]
-
-                loss = criterion(logits, targets)
-                valid_loss += loss.item()
+                valid_loss += compute_loss_batch(model, batch_X, criterion)
         
         avg_train_loss = train_loss / len(train_loader)
         avg_valid_loss = valid_loss / len(valid_loader)
         train_losses.append(avg_train_loss)
         valid_losses.append(avg_valid_loss)
         
-        print(f'Epoch {epoch+1}: Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
+        if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
+            print(f'Epoch {epoch+1}: Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
         
         # Early Stopping
         if avg_valid_loss < best_valid_loss:
             best_valid_loss = avg_valid_loss
             patience_counter = 0
-            torch.save(model.state_dict(), f'best_encoder_{suffix}.pth')
+            torch.save(model.state_dict(), f'best_models/best_encoder{suffix}.pth')
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -132,7 +142,8 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
                 break
     
     # Загружаем лучшую модель
-    model.load_state_dict(torch.load(f'best_encoder_{suffix}.pth'))
+    model.load_state_dict(torch.load(f'best_models/best_encoder{suffix}.pth'))
+    
     return train_losses, valid_losses
 
 # --- Генерация имен ---
@@ -175,7 +186,7 @@ def generate_names(model, sos_idx, eos_idx, pad_idx, eng_idx2char, num_names=10,
     return names
 
 # Загружаем обученный Encoder
-def load_encoder(vocab_size, checkpoint_path='best_encoder.pth', embed_size=128, hidden_size=256):
+def load_encoder(vocab_size, checkpoint_path='best_models/best_encoder.pth', embed_size=128, hidden_size=256):
     """Загружает обученный Encoder"""
     encoder = RNNEncoder(vocab_size, embed_size, hidden_size)
     
