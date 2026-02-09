@@ -13,6 +13,22 @@ import time
 
 from utils_models import check_translation, timer
 
+class BahdanauAttention(nn.Module):
+    def __init__(self, hidden_size):
+        super(BahdanauAttention, self).__init__()
+        self.Wa = nn.Linear(hidden_size, hidden_size)
+        self.Ua = nn.Linear(hidden_size, hidden_size)
+        self.Va = nn.Linear(hidden_size, 1)
+
+    def forward(self, query, keys):
+        scores = self.Va(torch.tanh(self.Wa(query) + self.Ua(keys)))
+        scores = scores.squeeze(2).unsqueeze(1)
+
+        weights = F.softmax(scores, dim=-1)
+        context = torch.bmm(weights, keys)
+
+        return context, weights
+    
 class AttentionDecoder(nn.Module):
     def __init__(self, rus_vocab_size, hidden_size=64, eng_max_len=13, pos_encoding=None, max_len=21, multi_head = False, n_heads = 3):
         super().__init__()
@@ -32,8 +48,7 @@ class AttentionDecoder(nn.Module):
         self.gru = nn.GRU(2*hidden_size, hidden_size, batch_first=True)
         
         # Attention механизм
-        self.attention = nn.Linear(hidden_size * 2, hidden_size)
-        self.attention_combine = nn.Linear(hidden_size + hidden_size, hidden_size)
+        self.attention = BahdanauAttention(hidden_size)
         
         # Выходной слой
         self.fc_out = nn.Linear(hidden_size, rus_vocab_size)
@@ -63,15 +78,9 @@ class AttentionDecoder(nn.Module):
         decoder_hidden_expanded = encoder_hidden[-1]  # [B, hidden_size]
         
         # Attention для КАЖДОГО временного шага decoder'а
-        attention_weights = self.compute_attention(
+        attention_weights, context = self.compute_attention(
             decoder_hidden_expanded, encoder_outputs
-        )  # [B, eng_seq_len]
-        
-        # Context vector [B, hidden_size]
-        context = torch.bmm(
-            attention_weights.unsqueeze(1),  # [B, 1, eng_seq_len]
-            encoder_outputs  # [B, eng_seq_len, hidden_size]
-        ).squeeze(1)  # [B, hidden_size]
+        )
         
         # Конкатенируем embedded + context
         gru_input = torch.cat([embedded, context.unsqueeze(1).expand(-1, embedded.size(1), -1)], dim=2)
@@ -89,15 +98,18 @@ class AttentionDecoder(nn.Module):
         decoder_hidden: [B, hidden_size]
         encoder_outputs: [B, eng_seq_len, hidden_size]
         """
-        # Attention energy: decoder_hidden * encoder_outputs
-        energy = torch.tanh(self.attention(
-            torch.cat([decoder_hidden.unsqueeze(1).expand(-1, encoder_outputs.size(1), -1), 
-                      encoder_outputs], dim=2)
-        ))  # [B, eng_seq_len, hidden_size]
+        # BahdanauAttention ожидает query [B, 1, H] и keys [B, S, H]
+        query = decoder_hidden.unsqueeze(1)          # [B, 1, H]
+
+        context, attn_weights = self.attention(
+            query=query,
+            keys=encoder_outputs
+        )
         
-        attention_scores = torch.sum(energy, dim=2)  # [B, eng_seq_len]
-        attention_weights = F.softmax(attention_scores, dim=1)  # [B, eng_seq_len]
-        return attention_weights
+        attention_weights = attn_weights.squeeze(1)  # [B, eng_seq_len]
+        context = context.squeeze(1)                 # [B, hidden_size]
+
+        return attention_weights, context
     
     def _create_sine_pe(self, d_model, max_len):
         pe = torch.zeros(max_len, d_model)
