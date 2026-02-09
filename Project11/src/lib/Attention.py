@@ -211,6 +211,24 @@ class MultiHeadAttention(nn.Module):
         
         return output, attn_weights
 
+def compute_loss(decoder, encoder, batch_X, batch_y, criterion, encoder_method='get_encoder_outputs'):
+    """
+    Вычисляет loss для одного батча (train/val).
+    """
+    encoder_outputs = encoder.get_encoder_outputs(batch_X)
+    encoder_hidden = encoder.get_encoder_state(batch_X)
+    
+    decoder_input = batch_y[:, :-1]   # [B, rus_len-1]
+    decoder_target = batch_y[:, 1:]   # [B, rus_len-1]
+    
+    logits, _, _ = decoder(decoder_input, encoder_outputs, encoder_hidden)
+    logits = logits.reshape(-1, logits.size(-1))
+    targets = decoder_target.reshape(-1)
+    
+    loss = criterion(logits, targets)
+        
+    return loss
+
 @timer
 def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train_t, X_valid_t, epochs=100, lr=0.0003, patience=15, suffix="", **kwargs):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -241,19 +259,8 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
             
             optimizer.zero_grad()
             
-            # Encoder outputs + initial hidden
-            encoder_outputs = encoder.get_encoder_outputs(batch_X)  # [B, eng_len, H]
-            encoder_hidden = encoder.get_encoder_state(batch_X)          # [1, B, H]
-            
-            # Decoder forward
-            decoder_input = batch_y[:, :-1]   # [B, rus_len-1]
-            decoder_target = batch_y[:, 1:]   # [B, rus_len-1]
-            
-            logits, _, _ = decoder(decoder_input, encoder_outputs, encoder_hidden)
-            logits = logits.reshape(-1, logits.size(-1))
-            targets = decoder_target.reshape(-1)
-            
-            loss = criterion(logits, targets)
+            loss = compute_loss(decoder, encoder, batch_X, batch_y, criterion)
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.5)
             optimizer.step()
@@ -271,17 +278,8 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
             for batch_X, batch_y in valid_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 
-                encoder_outputs = encoder.get_encoder_outputs(batch_X)
-                encoder_hidden = encoder.get_encoder_state(batch_X)
-                
-                decoder_input = batch_y[:, :-1]
-                decoder_target = batch_y[:, 1:]
-                
-                logits, _, _ = decoder(decoder_input, encoder_outputs, encoder_hidden)
-                logits = logits.reshape(-1, logits.size(-1))
-                targets = decoder_target.reshape(-1)
-                
-                loss = criterion(logits, targets)
+                loss = compute_loss(decoder, encoder, batch_X, batch_y, criterion)
+
                 valid_loss += loss.item()
                 num_valid_batches += 1
         
