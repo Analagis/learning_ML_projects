@@ -56,7 +56,7 @@ class AttentionDecoder(nn.Module):
         self.pe = None
         if pos_encoding == 'sine':
             self.pe = self._create_sine_pe(hidden_size, max_len)
-        elif pos_encoding == 'trainable':
+        elif pos_encoding == 'weights':
             self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
     
     def forward(self, decoder_input, encoder_outputs, encoder_hidden):
@@ -65,8 +65,6 @@ class AttentionDecoder(nn.Module):
         encoder_outputs: [B, eng_seq_len, hidden_size] - ВСЕ скрытые состояния encoder'а!
         encoder_hidden: [1, B, hidden_size] - начальное состояние
         """
-        B = decoder_input.size(0)
-        
         # Embed decoder input
         embedded = self.embedding(decoder_input)  # [B, rus_seq_len, embed_size]
 
@@ -289,7 +287,7 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
         valid_losses.append(avg_valid_loss)
         
          # Печать перевода
-        if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
+        if epoch%(patience//3) == 0 or epoch == epochs - 1:
             print(f'\033[92mEpoch {epoch+1}:\033[0m Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
 
             print("=== TRAIN SET ===")
@@ -321,7 +319,7 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
     decoder.load_state_dict(torch.load(f'best_models/best_attention_decoder{suffix}.pth'))
     return decoder, train_losses, valid_losses
 
-def plot_attention_heatmap(eng_name, rus_name, attention_weights_list, max_length=21):
+def plot_attention_heatmap(eng_name, rus_name, attention_weights_list, max_length=23):
     """
     eng_name: исходное имя с < и >
     rus_name: переведенное имя с < и >
@@ -422,3 +420,4 @@ def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_ch
     eng_name = ''.join([eng_idx2char[idx] for idx in eng_name_indices])
     
     return eng_name, rus_name, attention_weights_list
+

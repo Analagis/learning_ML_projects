@@ -12,7 +12,7 @@ class RNNEncoder(nn.Module):
     def __init__(self, vocab_size, hidden_size=64, num_layers=1, pos_encoding=None, max_len=13):
         super().__init__()
         self.hidden_size = hidden_size
-        self.pos_encoding = pos_encoding  # 'none', 'sine', 'trainable'
+        self.pos_encoding = pos_encoding  # 'none', 'sine', 'weights'
         self.max_len = max_len
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
@@ -28,7 +28,7 @@ class RNNEncoder(nn.Module):
         self.pe = None
         if pos_encoding == 'sine':
             self.pe = self._create_sine_pe()
-        elif pos_encoding == 'trainable':
+        elif pos_encoding == 'weights':
             self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
         
     def forward(self, x, hidden=None):
@@ -84,7 +84,7 @@ def compute_loss_batch(model, batch_X, criterion):
 
 # --- Training Loop с Early Stopping ---
 @timer
-def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr=0.001, patience=10, suffix=""):
+def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr=0.001, patience=15, suffix=""):
     model = model.to(model.device)
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)  # Игнорируем PAD
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -124,7 +124,7 @@ def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr
         train_losses.append(avg_train_loss)
         valid_losses.append(avg_valid_loss)
         
-        if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
+        if epoch%(patience//3) == 0 or epoch == epochs - 1:
             print(f'\033[92mEpoch {epoch+1}:\033[0m Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
         
         # Early Stopping

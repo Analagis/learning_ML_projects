@@ -32,7 +32,7 @@ class RNNDecoder(nn.Module):
         self.pe = None
         if pos_encoding == 'sine':
             self.pe = self._create_sine_pe(hidden_size, max_len)
-        elif pos_encoding == 'trainable':
+        elif pos_encoding == 'weights':
             self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
     
     def forward(self, x, hidden):
@@ -178,7 +178,7 @@ def train_decoder(encoder, train_loader, valid_loader, config,
         valid_losses.append(avg_valid_loss)
         
          # Печать перевода
-        if (epoch + 1) % (epochs // 4) == 0 or epoch == epochs - 1:
+        if epoch%(patience//3) == 0 or epoch == epochs - 1:
             print(f'\033[92mEpoch {epoch+1}:\033[0m Train={avg_train_loss:.4f}, Valid={avg_valid_loss:.4f}')
 
             print("=== TRAIN SET ===")

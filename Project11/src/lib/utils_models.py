@@ -6,6 +6,8 @@ import torch.nn as nn
 import numpy as np
 import time
 from functools import wraps
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 def check_translation(X_test_t, eng_char2idx, eng_idx2char, decoder, encoder, rus_char2idx, rus_idx2char, y_max_len, n):
     translations = []
@@ -73,3 +75,21 @@ def timer(func):
         print(f"\033[94mВремя обучения {epochs} эпох: {hours:02d}:{mins:02d}:{secs:02d}\033[0m")
         return result
     return wrapper
+
+def visualize_positional_encoding(decoder):
+    """Example of weights for trainable position encoder"""
+    pe = decoder.pe.cpu().detach().numpy()  # [max_len, hidden_size]
+    
+    plt.figure(figsize=(8, 6))
+    
+    # Главный график: ВСЕ веса как heatmap
+    sns.heatmap(pe[:, :64],  # первые 64 размерности
+                cmap='RdBu_r', center=0, annot=False,
+                cbar_kws={'label': 'Вес'})
+    plt.title('Trainable Position Encoder Weights\n(первые 64 размерности)', 
+              fontsize=14, fontweight='bold')
+    plt.xlabel('Размерность эмбеддинга')
+    plt.ylabel('Позиция токена')
+    
+    plt.tight_layout()
+    plt.show()
