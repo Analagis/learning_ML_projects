@@ -2,146 +2,139 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from baseVAE import BaseVAE
+import numpy as np
+import matplotlib.pyplot as plt
 
-class SupervisedVAE(BaseVAE):
+class SupervisedVAELoss(nn.Module):
+    def forward(self, x, data, h_mean, h_log_var):
+        bce = F.binary_cross_entropy(x, data, reduction='sum')
+        kld = -0.5 * torch.sum(1 + h_log_var - h_mean.pow(2) - h_log_var.exp())
+        return bce + kld
+    
+class SupervisedVAE(nn.Module):
     """
     Supervised Variational AutoEncoder.
     Добавляет классификацию цифр (0-9) поверх латентного пространства z.
     """
-    
-    def __init__(self, input_dim: int, n_classes: int = 10, hidden_dims: list = None, 
-                 z_dim: int = 2, beta: float = 0.1, classifier_hidden: list = [64]):
-        super().__init__(input_dim, hidden_dims, z_dim, beta)
-        
+    def __init__(self, input_dim, latent_dim=1, n_classes=10):
+        super().__init__()
+        self.latent_dim = latent_dim
         self.n_classes = n_classes
-        self.classifier = self._build_classifier(classifier_hidden)
+        
+        encoder_input_dim = input_dim + n_classes
+
+        self.encoder = nn.Sequential(
+            nn.Linear(encoder_input_dim, 512),
+            nn.ReLU(),
+            nn.BatchNorm1d(512),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256)
+        )
+        
+        self.mean_layer = nn.Linear(256, latent_dim)
+        self.logvar_layer = nn.Linear(256, latent_dim)
+        
+        decoder_input_dim = latent_dim + n_classes
+
+        self.decoder = nn.Sequential(
+            nn.Linear(decoder_input_dim, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256),
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.BatchNorm1d(512),
+            nn.Linear(512, 784),
+            nn.Sigmoid()
+        )
+
+        self.device = 'cuda'
     
-    def _build_classifier(self, hidden_dims: list) -> nn.Module:
-        """Классификатор: z → класс."""
-        dims = [self.z_dim] + hidden_dims + [self.n_classes]
-        layers = []
-        for i in range(len(dims) - 1):
-            layers.extend([nn.Linear(dims[i], dims[i+1]), nn.ReLU()])
-            if i < len(dims) - 2:  # BatchNorm везде кроме последнего
-                layers.append(nn.BatchNorm1d(dims[i+1]))
-        return nn.Sequential(*layers)
+    def encode(self, x, y):
+        y_onehot = F.one_hot(y, num_classes=self.n_classes).float()
+        encoder_input = torch.cat([x, y_onehot], dim=1).to(self.device)
+        h = self.encoder(encoder_input)
+        return self.mean_layer(h), self.logvar_layer(h)
     
-    def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Перехватываем encode для доступа к z."""
-        mu, logvar = super().encode(x)
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar).to(self.device)
+        eps = torch.randn_like(std).to(self.device)
+        return mu + eps * std
+    
+    def decode(self, z, y):
+        y_onehot = F.one_hot(y, num_classes=self.n_classes).float()
+        decoder_input = torch.cat([z, y_onehot], dim=1).to(self.device)
+        return self.decoder(decoder_input)
+    
+    def forward(self, x, y):
+        mu, logvar = self.encode(x, y)
         z = self.reparameterize(mu, logvar)
-        return mu, logvar, z  # Возвращаем z тоже!
+        recon_x = self.decode(z, y)
+        return recon_x, mu, logvar, z
     
-    def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> dict:
+    def fit(self, 
+            train_loader, 
+            epochs: int = 50, 
+            lr: float = 1e-3):
         """
-        Полный supervised forward.
-        Returns: dict с x_recon, mu, logvar, z, y_pred (если y есть).
+        Обучение VAE с валидацией и логированием.
+        
+        Returns:
+            list: Список средних loss по эпохам.
         """
-        mu, logvar, z = self.encode(x)
-        x_recon = self.decode(z)
-        y_pred = self.classifier(z)
-        
-        return {
-            'x_recon': x_recon,
-            'mu': mu,
-            'logvar': logvar,
-            'z': z,
-            'y_pred': y_pred
-        }
-    
-    def compute_supervised_loss(self, x: torch.Tensor, y: torch.Tensor, 
-                              x_recon: torch.Tensor, mu: torch.Tensor, 
-                              logvar: torch.Tensor, y_pred: torch.Tensor) -> tuple:
-        """
-        Supervised ELBO + CrossEntropy.
-        """
-        # Генеративная часть (ELBO)
-        elbo_loss, elbo_metrics = super().compute_elbo_loss(x, x_recon, mu, logvar)
-        
-        # Supervised часть
-        cls_loss = F.cross_entropy(y_pred, y)
-        
-        # Итоговая loss
-        total_loss = elbo_loss + cls_loss  # Можно добавить вес: + lambda_cls * cls_loss
-        
-        metrics = {**elbo_metrics, 'cls_loss': cls_loss.item(), 'total_loss': total_loss.item()}
-        return total_loss, metrics
-    
-    def fit(self, train_loader, val_loader=None, epochs: int = 50, lr: float = 1e-3,
-            device: str = None, log_every: int = 100, save_path: str = None) -> list:
-        
-        if device is None:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        self.to(device)
+        self.to(self.device)
         self.train()
         
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        losses = []
+        loss_func = SupervisedVAELoss()
         
-        for epoch in range(epochs):
-            train_loss = 0.0
-            num_batches = 0
-            
-            pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}', leave=False)
-            for batch_idx, (x, y) in enumerate(pbar):
-                x, y = x.to(device), y.to(device)
-                
-                # ✅ ПРОСТОЙ forward
-                outputs = self(x)
-                
-                # ✅ ПРЯМОЕ распаковывание (без фильтрации!)
-                loss, metrics = self.compute_supervised_loss(
-                    x, y, outputs['x_recon'], outputs['mu'], 
-                    outputs['logvar'], outputs['y_pred']
-                )
-                
-                # Backward
+        for _e in range(epochs):
+            loss_mean = 0
+            lm_count = 0
+        
+            train_tqdm = tqdm(train_loader, leave=True)
+            for x_train, y_train in train_tqdm:
+                x_train = x_train.to(self.device)
+                y_train = y_train.to(self.device)
+
+                recon_batch, mu, logvar, z = self(x_train, y_train)
+                loss = loss_func(recon_batch, x_train, mu, logvar, )
+        
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
                 optimizer.step()
-                
-                train_loss += loss.item()
-                num_batches += 1
-                
-                if batch_idx % log_every == 0:
-                    pbar.set_postfix({
-                        'loss': f'{loss.item():.4f}',
-                        'recon': f'{metrics["recon_loss"]:.4f}',
-                        'kl': f'{metrics["kl_loss"]:.4f}',
-                        'cls': f'{metrics["cls_loss"]:.4f}'
-                    })
-            
-            avg_loss = train_loss / num_batches
-            losses.append(avg_loss)
-            print(f'Epoch {epoch+1:2d}: Loss={avg_loss:.4f}')
         
-        return losses
-    
-    def _supervised_validate(self, val_loader, device):
-        """Валидация с accuracy."""
+                lm_count += 1
+                loss_mean = 1/lm_count * loss.item() + (1 - 1/lm_count) * loss_mean
+                train_tqdm.set_description(f"Epoch [{_e+1}/{epochs}], loss_mean={loss_mean:.3f}")
+
+    def plot_latent_grid(self, latent_points=15, n_classes=10, limit=3):
         self.eval()
-        total_loss, correct, total = 0, 0, 0
+
+        z_values = np.linspace(-limit, limit, latent_points)
+        figure = np.zeros((28 * n_classes, 28 * latent_points))
         
         with torch.no_grad():
-            for x, y in val_loader:
-                x, y = x.to(device), y.to(device)
-                outputs = self(x)
-                loss, metrics = self.compute_supervised_loss(x, y, **outputs)
-                total_loss += metrics['total_loss']
-                
-                pred = outputs['y_pred'].argmax(dim=1)
-                correct += (pred == y).sum().item()
-                total += y.size(0)
+            for i, digit in enumerate(range(n_classes)):
+                for j, z_val in enumerate(z_values):
+                    z = torch.FloatTensor([[z_val]]).to(self.device)
+                    y = torch.LongTensor([digit]).to(self.device)
+
+                    recon = self.decode(z, y).cpu().numpy().reshape(28, 28)
+
+                    figure[i*28:(i+1)*28, j*28:(j+1)*28] = recon
+
+        plt.figure(figsize=(20, 12))
+        plt.imshow(figure, cmap='gray')
+
+        plt.xticks(np.arange(14, 28*latent_points, 28), 
+                [f'{z:.1f}' for z in z_values], fontsize=10)
+        plt.yticks(np.arange(14, 28*n_classes, 28), 
+                [f'Digit {i}' for i in range(n_classes)], fontsize=10)
         
-        self.train()
-        return total_loss / len(val_loader), correct / total
-    
-    def predict_class(self, x: torch.Tensor) -> torch.Tensor:
-        """Предсказание класса для новых данных."""
-        self.eval()
-        with torch.no_grad():
-            outputs = self(x)
-            return outputs['y_pred'].argmax(dim=1)
+        plt.xlabel('Скрытое измерение', fontsize=14)
+        plt.ylabel('Цифровой класс', fontsize=14)
+        plt.title('Генерация CVAE: 15 значений 10 разрядных классов', fontsize=16)
+        plt.colorbar(label='Pixel Intensity')
+        plt.tight_layout()
+        plt.show()
