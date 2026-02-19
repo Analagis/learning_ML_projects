@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
+import matplotlib.pyplot as plt
 
 class VAELoss(nn.Module):
     def forward(self, x, y, h_mean, h_log_var):
@@ -95,61 +96,33 @@ class BaseVAE(nn.Module):
                 loss_mean = 1/lm_count * loss.item() + (1 - 1/lm_count) * loss_mean
                 train_tqdm.set_description(f"Epoch [{_e+1}/{epochs}], loss_mean={loss_mean:.3f}")
     
-    def plot_latent_space(self, test_loader, n_samples: int = 5000, figsize: tuple = (10, 8)):
+    def plot_latent_space(self, test_loader, figsize: tuple = (10, 8)):
         """
         Универсальная визуализация латентного пространства.
         Работает как с BaseVAE (tuple), так и с SVAE (dict).
         """
-        import matplotlib.pyplot as plt
-        
+        self.to(self.device)
         self.eval()
-        z_list, labels_list = [], []
+        latents = []
+        labels = []
         
         with torch.no_grad():
-            for i, batch in enumerate(test_loader):
-                if len(z_list) >= n_samples:
-                    break
-                
-                # ✅ Универсальная обработка batch
-                if len(batch) == 2:  # (x, labels)
-                    x, labels = batch
-                else:  # Только x
-                    x, labels = batch, None
-                
-                x = x.to(next(self.parameters()).device)
-                
-                # ✅ Универсальный forward
-                output = self(x)
-                
-                # ✅ Извлекаем z универсально
-                if isinstance(output, dict):
-                    z = output['z']  # SVAE
-                elif isinstance(output, tuple) and len(output) >= 4:
-                    z = output[3]    # BaseVAE: x_recon, mu, logvar, z
-                else:
-                    raise ValueError("Неизвестный формат вывода модели")
-                
-                z_list.append(z.cpu())
-                if labels is not None:
-                    labels_list.append(labels)
+            for data, target in test_loader:
+                data = data.to(self.device)
+                _, _, mu, z = self(data)
+                latents.append(mu.cpu().numpy())
+                labels.append(target.numpy())
         
-        # Собираем результаты
-        z_all = torch.cat(z_list)[:n_samples]
+        latents = np.concatenate(latents, axis=0)
+        labels = np.concatenate(labels, axis=0)
         
-        # Цвета по лейблам ИЛИ случайные
-        if labels_list:
-            labels_all = torch.cat(labels_list)[:n_samples]
-            colors = labels_all.numpy()
-        else:
-            colors = np.random.randint(0, 10, size=z_all.shape[0])
-        
-        # Plot
         plt.figure(figsize=figsize)
-        scatter = plt.scatter(z_all[:, 0], z_all[:, 1], c=colors, cmap='tab10', alpha=0.7, s=10)
-        plt.colorbar(scatter, label='Digit' if labels_list else 'Random')
-        plt.xlabel('z[0]')
-        plt.ylabel('z[1]')
-        plt.title('VAE Latent Space')
+        scatter = plt.scatter(latents[:, 0], latents[:, 1], c=labels, 
+                            cmap='tab10', alpha=0.6, s=5)
+        plt.colorbar(scatter, label='Digit')
+        plt.title('2D Визуализация скрытого пространства', fontsize=14)
+        plt.xlabel('z1')
+        plt.ylabel('z2')
         plt.grid(True, alpha=0.3)
         plt.show()
 
@@ -162,9 +135,7 @@ class BaseVAE(nn.Module):
             latent_range: Диапазон z [-range, +range]
             figsize: Размер фигуры
         """
-        import matplotlib.pyplot as plt
-        import numpy as np
-        
+                
         self.eval()
         
         # 1. Создаем равномерную сетку в 2D латентном пространстве
