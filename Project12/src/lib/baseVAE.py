@@ -2,7 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+import numpy as np
 
+class VAELoss(nn.Module):
+    def forward(self, x, y, h_mean, h_log_var):
+        img_loss = torch.sum(torch.square(x - y), dim=-1)
+        kl_loss = -0.5 * torch.sum(1 + h_log_var - torch.square(h_mean) - torch.exp(h_log_var), dim=-1)
+        return torch.mean(img_loss + kl_loss)
+    
 class BaseVAE(nn.Module):
     """
     Базовый Variational AutoEncoder с ELBO loss.
@@ -14,157 +21,79 @@ class BaseVAE(nn.Module):
         beta (float): Веса KL терма в ELBO (по умолчанию 1.0).
     """
     
-    def __init__(self, input_dim: int, hidden_dims: list|None = None, z_dim: int = 2, beta: float = 1.0):
+    def __init__(self, input_dim, output_dim, hidden_dim):
         super().__init__()
-        
-        self.input_dim = input_dim
-        self.z_dim = z_dim
-        self.beta = beta
-        
-        # Стандартная архитектура encoder/decoder
-        self.encoder = self._build_encoder(hidden_dims)
-        self.decoder = self._build_decoder(hidden_dims)
-        
-        # Параметры латентного распределения
-        self.fc_mu = nn.Linear(hidden_dims[-1] if hidden_dims else 400, z_dim)
-        self.fc_logvar = nn.Linear(hidden_dims[-1] if hidden_dims else 400, z_dim)
-    
-    def _build_encoder(self, hidden_dims: list) -> nn.Module:
-        """Строит encoder: x → hidden → mu, logvar."""
-        dims = [self.input_dim] + (hidden_dims or [400, 200])
-        layers = []
-        for h_in, h_out in zip(dims[:-1], dims[1:]):
-            layers.extend([nn.Linear(h_in, h_out), nn.ReLU(), nn.BatchNorm1d(h_out)])
-        return nn.Sequential(*layers)
-    
-    def _build_decoder(self, hidden_dims: list) -> nn.Module:
-        """Строит decoder: z → hidden → x."""
-        dims = [self.z_dim] + (hidden_dims or [400, 200])[::-1] + [self.input_dim]
-        layers = []
-        for i in range(len(dims) - 1):
-            layers.extend([nn.Linear(dims[i], dims[i+1]), nn.ReLU()])
-            if i < len(dims) - 2:  # BatchNorm везде кроме последнего
-                layers.append(nn.BatchNorm1d(dims[i+1]))
-        return nn.Sequential(*layers)
-    
-    def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encoder: возвращает mu и logvar."""
-        h = self.encoder(x.view(x.size(0), -1))
-        return self.fc_mu(h), self.fc_logvar(h)
-    
-    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """Sampling z ~ N(mu, std) с градиентами."""
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-    
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Decoder: z → reconstructed x."""
-        return self.decoder(z)
-    
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Полный forward pass."""
-        mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
-        x_recon = self.decode(z)
-        return x_recon, mu, logvar, z
-    
-    def compute_elbo_loss(self, x: torch.Tensor, x_recon: torch.Tensor,
-                         mu: torch.Tensor, logvar: torch.Tensor) -> tuple[torch.Tensor, dict]:
-        """
-        ELBO loss = Reconstruction + KL divergence.
-        
-        Returns: (total_loss, loss_dict)
-        """
-        # Reconstruction loss (BCE для бинарных изображений, MSE для RGB)
-        recon_loss = F.binary_cross_entropy_with_logits(
-            x_recon.view(-1, self.input_dim), 
-            x.view(-1, self.input_dim), 
-            reduction='mean'
+        self.hidden_dim = hidden_dim
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ELU(inplace=True),
+            nn.BatchNorm1d(128),
+            nn.Linear(128, 64),
+            nn.ELU(inplace=True),
+            nn.BatchNorm1d(64)
         )
-        
-        # KL divergence: D_KL(q(z|x) || p(z)) ≈ 0.5 * Σ(1 + log(σ²) - μ² - σ²)
-        kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-        
-        elbo_loss = recon_loss + self.beta * kl_loss
-        
-        return elbo_loss, {
-            'recon_loss': recon_loss.item(),
-            'kl_loss': kl_loss.item(),
-            'elbo_loss': elbo_loss.item()
-        }
+ 
+        self.h_mean = nn.Linear(64, self.hidden_dim)
+        self.h_log_var = nn.Linear(64, self.hidden_dim)
+ 
+        self.decoder = nn.Sequential(
+            nn.Linear(self.hidden_dim, 64),
+            nn.ELU(inplace=True),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, 128),
+            nn.ELU(inplace=True),
+            nn.BatchNorm1d(128),
+            nn.Linear(128, output_dim),
+            nn.Sigmoid()
+        )
+
+        self.device = 'cuda'
     
-    def sample(self, n_samples: int, device: str = 'cpu') -> torch.Tensor:
-        """Генерация новых сэмплов из prior N(0,1)."""
-        z = torch.randn(n_samples, self.z_dim).to(device)
-        with torch.no_grad():
-            samples = self.decode(z).view(n_samples, *self.input_shape)
-        return samples
-    
-    @property
-    def input_shape(self):
-        """Размер входного изображения"""
-        return (1, 28, 28)  # По умолчанию MNIST
+    def forward(self, x):
+        enc = self.encoder(x)
+ 
+        h_mean = self.h_mean(enc)
+        h_log_var = self.h_log_var(enc)
+ 
+        noise = torch.normal(mean=torch.zeros_like(h_mean), std=torch.ones_like(h_log_var)).to(self.device)
+        h = noise * torch.exp(h_log_var / 2).to(self.device) + h_mean
+        x = self.decoder(h)
+ 
+        return x, h, h_mean, h_log_var
 
     def fit(self, 
             train_loader, 
             epochs: int = 50, 
-            lr: float = 1e-3,
-            device: str = None,
-            log_every: int = 100,
-            save_path: str = None) -> list:
+            lr: float = 1e-3):
         """
         Обучение VAE с валидацией и логированием.
         
         Returns:
             list: Список средних loss по эпохам.
         """
-        if device is None:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        self.to(device)
+        self.to(self.device)
         self.train()
         
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        losses = []
+        loss_func = VAELoss()
         
-        for epoch in range(epochs):
-            train_loss = 0.0
-            num_batches = 0
-            
-            # Training loop
-            pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}', leave=False)
-            for batch_idx, (x, _) in enumerate(pbar):
-                x = x.to(device)
-                
-                # Forward
-                x_recon, mu, logvar, z = self(x)
-                loss, metrics = self.compute_elbo_loss(x, x_recon, mu, logvar)
-                
-                # Backward
+        for _e in range(epochs):
+            loss_mean = 0
+            lm_count = 0
+        
+            train_tqdm = tqdm(train_loader, leave=True)
+            for x_train, y_train in train_tqdm:
+                x_train = x_train.to(self.device)
+                predict, _, h_mean, h_log_var = self(x_train)
+                loss = loss_func(predict, x_train, h_mean, h_log_var)
+        
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
                 optimizer.step()
-                
-                train_loss += loss.item()
-                num_batches += 1
-                
-                # Логирование
-                if batch_idx % log_every == 0:
-                    pbar.set_postfix({
-                        'loss': f'{loss.item():.4f}',
-                        'recon': f'{metrics["recon_loss"]:.4f}',
-                        'kl': f'{metrics["kl_loss"]:.4f}'
-                    })
-            
-            avg_loss = train_loss / num_batches
-            losses.append(avg_loss)
-
-            if save_path and (epoch == 0 or avg_loss < min(losses[:-1])):
-                torch.save(self.state_dict(), save_path)
         
-        return losses
+                lm_count += 1
+                loss_mean = 1/lm_count * loss.item() + (1 - 1/lm_count) * loss_mean
+                train_tqdm.set_description(f"Epoch [{_e+1}/{epochs}], loss_mean={loss_mean:.3f}")
     
     def plot_latent_space(self, test_loader, n_samples: int = 5000, figsize: tuple = (10, 8)):
         """
@@ -246,7 +175,7 @@ class BaseVAE(nn.Module):
         # 2. Прогоняем через decoder
         with torch.no_grad():
             z_tensor = torch.tensor(z_grid, dtype=torch.float32).to(next(self.parameters()).device)
-            generated_images = self.decode(z_tensor).cpu()  # [225, 784]
+            generated_images = self.decoder(z_tensor).cpu()  # [225, 784]
         
         # 3. Reshape в картинки 28x28
         generated_images = generated_images.view(-1, 1, 28, 28)  # [225, 1, 28, 28]
