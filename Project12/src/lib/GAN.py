@@ -65,7 +65,7 @@ def train_GAN(train_data, epochs, hidden_dim, batch_size, lr = 0.001):
     optimizer_gen = torch.optim.Adam(params=model_gen.parameters(), lr=lr)
     optimizer_dis = torch.optim.Adam(params=model_dis.parameters(), lr=lr)
 
-    loss_func = nn.BCEWithLogitsLoss()
+    loss_func = F.binary_cross_entropy_with_logits()
     targets_0 = torch.zeros(batch_size, 1).to(device)
     targets_1 = torch.ones(batch_size, 1).to(device)
 
@@ -191,19 +191,19 @@ def train_GAN_gr(train_data, epochs, hidden_dim, lr = 0.001):
 
     optimizer = torch.optim.Adam(params=model.parameters(), lr=lr, betas=(0.5, 0.999))
 
-    g_losses = []
-    d_losses = []
+    loss_gen_lst = []
+    loss_dis_lst = []
     real_scores = []
     fake_scores = []
 
     for epoch in range(epochs):
         train_tqdm = tqdm(train_data, leave=True)
-        for batch_idx, (real_imgs, _) in enumerate(train_tqdm):
-            batch_size = real_imgs.size(0)
-            real_imgs = real_imgs.to(device)
+        for batch_idx, (x_train, _) in enumerate(train_tqdm):
+            batch_size = x_train.size(0)
+            x_train = x_train.to(device)
             
             z = torch.randn(batch_size, 2).to(device)
-            real_output, fake_output, _ = model(z, real_imgs)
+            real_output, fake_output, _ = model(z, x_train)
             
             loss = gan_loss_with_grl(real_output, fake_output)
 
@@ -212,24 +212,24 @@ def train_GAN_gr(train_data, epochs, hidden_dim, lr = 0.001):
             optimizer.step()
 
             if batch_idx == 0:
-                d_losses.append(loss.item())
+                loss_dis_lst.append(loss.item())
                 real_scores.append(real_output.mean().item())
                 fake_scores.append(fake_output.mean().item())
 
                 with torch.no_grad():
                     g_loss = F.binary_cross_entropy_with_logits(
                         fake_output, torch.ones_like(fake_output))
-                    g_losses.append(g_loss.item())
+                    loss_gen_lst.append(g_loss.item())
 
             train_tqdm.set_description(f"Epoch [{epoch+1}/{epochs}], loss_mean_gen={loss:.3f}")
 
         
         if epoch % 10 == 0:
-            print(f'Epoch {epoch:3d} | Total Loss: {d_losses[-1]:.4f} | '
-                f'G Loss: {g_losses[-1]:.4f} | Real: {real_scores[-1]:.3f} | '
+            print(f'Epoch {epoch:3d} | Total Loss: {loss_dis_lst[-1]:.4f} | '
+                f'G Loss: {loss_gen_lst[-1]:.4f} | Real: {real_scores[-1]:.3f} | '
                 f'Fake: {fake_scores[-1]:.3f}')
 
-    return model, g_losses, d_losses
+    return model, loss_gen_lst, loss_dis_lst
 
 
 def GAN_plot_latent_grid(model_gen):
