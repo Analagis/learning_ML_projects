@@ -99,7 +99,6 @@ class BaseVAE(nn.Module):
     def plot_latent_space(self, test_loader, figsize: tuple = (10, 8)):
         """
         Универсальная визуализация латентного пространства.
-        Работает как с BaseVAE (tuple), так и с SVAE (dict).
         """
         self.to(self.device)
         self.eval()
