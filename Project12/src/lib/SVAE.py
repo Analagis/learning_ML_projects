@@ -16,9 +16,9 @@ class SupervisedVAE(nn.Module):
     Supervised Variational AutoEncoder.
     Добавляет классификацию цифр (0-9) поверх латентного пространства z.
     """
-    def __init__(self, input_dim, latent_dim=1, n_classes=10):
+    def __init__(self, input_dim, hidden_dim=1, n_classes=10):
         super().__init__()
-        self.latent_dim = latent_dim
+        self.hidden_dim = hidden_dim
         self.n_classes = n_classes
         
         encoder_input_dim = input_dim + n_classes
@@ -32,10 +32,10 @@ class SupervisedVAE(nn.Module):
             nn.BatchNorm1d(256)
         )
         
-        self.mean_layer = nn.Linear(256, latent_dim)
-        self.logvar_layer = nn.Linear(256, latent_dim)
+        self.h_mean = nn.Linear(256, self.hidden_dim)
+        self.h_log_var = nn.Linear(256, self.hidden_dim)
         
-        decoder_input_dim = latent_dim + n_classes
+        decoder_input_dim = self.hidden_dim + n_classes
 
         self.decoder = nn.Sequential(
             nn.Linear(decoder_input_dim, 256),
@@ -54,7 +54,7 @@ class SupervisedVAE(nn.Module):
         y_onehot = F.one_hot(y, num_classes=self.n_classes).float()
         encoder_input = torch.cat([x, y_onehot], dim=1).to(self.device)
         h = self.encoder(encoder_input)
-        return self.mean_layer(h), self.logvar_layer(h)
+        return self.h_mean(h), self.h_log_var(h)
     
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar).to(self.device)
@@ -108,11 +108,14 @@ class SupervisedVAE(nn.Module):
                 loss_mean = 1/lm_count * loss.item() + (1 - 1/lm_count) * loss_mean
                 train_tqdm.set_description(f"Epoch [{_e+1}/{epochs}], loss_mean={loss_mean:.3f}")
 
-    def plot_latent_grid(self, latent_points=15, n_classes=10, limit=3):
+    def plot_latent_grid(self, grid_size=15, n_classes=10, limit=3):
+        """
+        Создает сетку 15x15 изображений из латентного пространства.
+        """
         self.eval()
 
-        z_values = np.linspace(-limit, limit, latent_points)
-        figure = np.zeros((28 * n_classes, 28 * latent_points))
+        z_values = np.linspace(-limit, limit, grid_size)
+        figure = np.zeros((28 * n_classes, 28 * grid_size))
         
         with torch.no_grad():
             for i, digit in enumerate(range(n_classes)):
@@ -127,7 +130,7 @@ class SupervisedVAE(nn.Module):
         plt.figure(figsize=(20, 12))
         plt.imshow(figure, cmap='gray')
 
-        plt.xticks(np.arange(14, 28*latent_points, 28), 
+        plt.xticks(np.arange(14, 28*grid_size, 28), 
                 [f'{z:.1f}' for z in z_values], fontsize=10)
         plt.yticks(np.arange(14, 28*n_classes, 28), 
                 [f'Digit {i}' for i in range(n_classes)], fontsize=10)

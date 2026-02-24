@@ -64,8 +64,8 @@ class BaseVAE(nn.Module):
 
     def fit(self, 
             train_loader, 
-            epochs: int = 50, 
-            lr: float = 1e-3):
+            epochs = 50, 
+            lr = 1e-3):
         """
         Обучение VAE с валидацией и логированием.
         
@@ -96,7 +96,7 @@ class BaseVAE(nn.Module):
                 loss_mean = 1/lm_count * loss.item() + (1 - 1/lm_count) * loss_mean
                 train_tqdm.set_description(f"Epoch [{_e+1}/{epochs}], loss_mean={loss_mean:.3f}")
     
-    def plot_latent_space(self, test_loader, figsize: tuple = (10, 8)):
+    def plot_latent_space(self, test_loader, figsize = (10, 8)):
         """
         Универсальная визуализация латентного пространства.
         """
@@ -125,7 +125,7 @@ class BaseVAE(nn.Module):
         plt.grid(True, alpha=0.3)
         plt.show()
 
-    def plot_latent_grid(self, grid_size: int = 15, latent_range: float = 3.0, figsize: int = 15):
+    def plot_latent_grid(self, grid_size = 15, latent_range = 3.0, figsize = (15, 15)):
         """
         Создает сетку 15x15 изображений из латентного пространства.
         
@@ -158,7 +158,7 @@ class BaseVAE(nn.Module):
             figure[row*28:(row+1)*28, col*28:(col+1)*28] = img[0]  # Grayscale
         
         # 5. Plot
-        plt.figure(figsize=(figsize, figsize))
+        plt.figure(figsize=figsize)
         plt.imshow(figure, cmap='gray')
         plt.axis('off')
         plt.title(f'VAE Latent Space Grid ({grid_size}x{grid_size})')
