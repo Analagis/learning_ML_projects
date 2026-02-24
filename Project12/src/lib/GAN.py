@@ -81,7 +81,7 @@ def train_GAN(train_data, epochs, hidden_dim, batch_size, lr = 0.001):
         lm_count = 0
     
         train_tqdm = tqdm(train_data, leave=True)
-        for x_train, y_train in train_tqdm:
+        for x_train, _ in train_tqdm:
             x_train = x_train.to(device)
     
             h = torch.normal(mean=torch.zeros((batch_size, hidden_dim)), std=torch.ones((batch_size, hidden_dim)))
@@ -119,6 +119,118 @@ def train_GAN(train_data, epochs, hidden_dim, batch_size, lr = 0.001):
         loss_dis_lst.append(loss_mean_dis)
 
     return model_gen, loss_gen_lst, loss_dis_lst
+
+class GradientReversalFunction(torch.autograd.Function):
+    """
+    Autograd функция для обратного градиента
+    """
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.save_for_backward(x)
+        ctx.lambda_ = lambda_
+        return x.view_as(x)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambda_ * grad_output, None
+
+class GradientReversalLayer(nn.Module):
+    """
+    Модуль-обертка для GradientReversalFunction
+    """
+    def __init__(self, lambda_=1.0):
+        super(GradientReversalLayer, self).__init__()
+        self.lambda_ = lambda_
+    
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambda_)
+    
+    def set_lambda(self, lambda_):
+        self.lambda_ = lambda_
+
+class GANWithGradientReversal(nn.Module):
+    """
+    Полная модель GAN со слоем обратного градиента
+    """
+    def __init__(self, latent_dim=2, grad_reverse_lambda=0.5):
+        super(GANWithGradientReversal, self).__init__()
+        self.latent_dim = latent_dim
+        self.grad_reverse_lambda = grad_reverse_lambda
+
+        self.generator = Generator(latent_dim)
+
+        self.grl = GradientReversalLayer(lambda_=grad_reverse_lambda)
+
+        self.discriminator = Discriminator()
+    
+    def forward(self, z, real_data=None):
+        fake_data = self.generator(z)
+        real_disc_out = self.discriminator(real_data)
+        
+        fake_data_with_grl = self.grl(fake_data)
+        fake_disc_out = self.discriminator(fake_data_with_grl)
+        
+        return real_disc_out, fake_disc_out, fake_data
+
+def gan_loss_with_grl(real_output, fake_output):
+    real_loss = F.binary_cross_entropy_with_logits(
+        real_output, torch.ones_like(real_output))
+    
+    fake_loss = F.binary_cross_entropy_with_logits(
+        fake_output, torch.zeros_like(fake_output))
+    
+    return real_loss + fake_loss
+
+
+def train_GAN_gr(train_data, epochs, hidden_dim, lr = 0.001):
+    device = torch.device("cuda")
+    model = GANWithGradientReversal(
+        latent_dim=hidden_dim, 
+        grad_reverse_lambda=15
+    ).to(device)    
+
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=lr, betas=(0.5, 0.999))
+
+    g_losses = []
+    d_losses = []
+    real_scores = []
+    fake_scores = []
+
+    for epoch in range(epochs):
+        train_tqdm = tqdm(train_data, leave=True)
+        for batch_idx, (real_imgs, _) in enumerate(train_tqdm):
+            batch_size = real_imgs.size(0)
+            real_imgs = real_imgs.to(device)
+            
+            z = torch.randn(batch_size, 2).to(device)
+            real_output, fake_output, _ = model(z, real_imgs)
+            
+            loss = gan_loss_with_grl(real_output, fake_output)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if batch_idx == 0:
+                d_losses.append(loss.item())
+                real_scores.append(real_output.mean().item())
+                fake_scores.append(fake_output.mean().item())
+
+                with torch.no_grad():
+                    g_loss = F.binary_cross_entropy_with_logits(
+                        fake_output, torch.ones_like(fake_output))
+                    g_losses.append(g_loss.item())
+
+            train_tqdm.set_description(f"Epoch [{epoch+1}/{epochs}], loss_mean_gen={loss:.3f}")
+
+        
+        if epoch % 10 == 0:
+            print(f'Epoch {epoch:3d} | Total Loss: {d_losses[-1]:.4f} | '
+                f'G Loss: {g_losses[-1]:.4f} | Real: {real_scores[-1]:.3f} | '
+                f'Fake: {fake_scores[-1]:.3f}')
+
+    return model, g_losses, d_losses
+
 
 def GAN_plot_latent_grid(model_gen):
     model_gen.eval()
