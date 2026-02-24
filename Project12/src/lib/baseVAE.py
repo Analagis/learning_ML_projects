@@ -14,12 +14,6 @@ class VAELoss(nn.Module):
 class BaseVAE(nn.Module):
     """
     Базовый Variational AutoEncoder с ELBO loss.
-    
-    Args:
-        input_dim (int): Размерность входных данных (например, 784 для MNIST).
-        hidden_dims (list): Слои скрытых сетей encoder/decoder.
-        z_dim (int): Размерность латентного пространства (по умолчанию 2).
-        beta (float): Веса KL терма в ELBO (по умолчанию 1.0).
     """
     
     def __init__(self, input_dim, output_dim, hidden_dim):
@@ -68,9 +62,6 @@ class BaseVAE(nn.Module):
             lr = 1e-3):
         """
         Обучение VAE с валидацией и логированием.
-        
-        Returns:
-            list: Список средних loss по эпохам.
         """
         self.to(self.device)
         self.train()
@@ -128,11 +119,6 @@ class BaseVAE(nn.Module):
     def plot_latent_grid(self, grid_size = 15, latent_range = 3.0, figsize = (15, 15)):
         """
         Создает сетку 15x15 изображений из латентного пространства.
-        
-        Args:
-            grid_size: Размер сетки (15x15)
-            latent_range: Диапазон z [-range, +range]
-            figsize: Размер фигуры
         """
                 
         self.eval()
