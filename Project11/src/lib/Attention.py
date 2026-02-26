@@ -37,11 +37,12 @@ class AttentionDecoder(nn.Module):
         self.pos_encoding = pos_encoding
         self.max_len = max_len
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.multi_head = multi_head
         
         # Embedding для русских букв
         self.embedding = nn.Embedding(rus_vocab_size, hidden_size)
 
-        if multi_head:
+        if self.multi_head:
             self.mha = MultiHeadAttention(hidden_size, hidden_size, n_heads=n_heads, device=self.device)
         
         # GRU Decoder
@@ -92,10 +93,16 @@ class AttentionDecoder(nn.Module):
         # Подготавливаем для attention: decoder_hidden повторяем для всех временных шагов
         decoder_hidden_expanded = encoder_hidden[-1].unsqueeze(1)  # [B, 1, H]
         
-        # Attention для КАЖДОГО временного шага decoder'а
-        context, attention_weights = self.attention(
-            decoder_hidden_expanded, encoder_outputs
-        )
+        if self.multi_head:
+            context, attention_weights = self.mha(
+                decoder_hidden_expanded,          # [B,1,H]
+                encoder_outputs,  # [B,S,H]
+                encoder_outputs   # [B,S,H]
+            )
+        else:
+            context, attention_weights = self.attention(
+                decoder_hidden_expanded, encoder_outputs
+            )
         
         # Конкатенируем embedded + context
         gru_input = torch.cat([embedded, context], dim=2)
@@ -105,7 +112,12 @@ class AttentionDecoder(nn.Module):
         
         # Выход
         logits = self.fc_out(gru_output.squeeze(1))  # [B, rus_seq_len, rus_vocab]
-        return logits, hidden, attention_weights.squeeze(1)
+
+        if self.multi_head:
+            attention_weights = attention_weights.squeeze(2)
+        else:
+            attention_weights = attention_weights.squeeze(1)
+        return logits, hidden, attention_weights
     
     def _create_sine_pe(self, d_model, max_len):
         pe = torch.zeros(max_len, d_model)
@@ -142,6 +154,7 @@ class MultiHeadAttention(nn.Module):
         query/key/value: [B, seq_len, hidden_size]
         """
         B, seq_len, _ = query.shape
+        _, k_len, _ = key.shape
         
         # Linear projections
         Q = self.q_linear(query)  # [B, seq_len, embed_size]
@@ -150,8 +163,8 @@ class MultiHeadAttention(nn.Module):
         
         # Reshape для multi-head: [B, n_heads, seq_len, head_dim]
         Q = Q.view(B, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = K.view(B, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        V = V.view(B, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        K = K.view(B, k_len, self.n_heads, self.head_dim).transpose(1, 2)
+        V = V.view(B, k_len, self.n_heads, self.head_dim).transpose(1, 2)
         
         # Attention scores [B, n_heads, seq_len, seq_len]
         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
@@ -370,7 +383,7 @@ def plot_attention_heatmap(eng_name, rus_name, attention_weights_list, max_lengt
     plt.tight_layout()
     plt.show()
 
-def translate(encoder, decoder, eng_name_indices, eng_idx2char, rus_char2idx, rus_idx2char, max_len=15):
+def translate(encoder, decoder, eng_name_indices, eng_idx2char, rus_char2idx, rus_idx2char, max_len=15, head = None):
     """Визуализация attention weights для одного имени"""
     device = next(decoder.parameters()).device
     encoder.eval()
@@ -391,7 +404,11 @@ def translate(encoder, decoder, eng_name_indices, eng_idx2char, rus_char2idx, ru
         logits, hidden, attn_weights = decoder(input_token, encoder_outputs, encoder_hidden)
         next_token = torch.argmax(logits[0], dim=-1).item()
         
-        attention_weights_list.append(attn_weights[0].cpu().detach().numpy())  # [eng_len]
+        if head is None:
+            attn_weights = attn_weights[0]
+        else:
+            attn_weights = attn_weights[0,head]
+        attention_weights_list.append(attn_weights.cpu().detach().numpy())  # [eng_len]
         generated_tokens.append(next_token)
         
         if next_token == rus_char2idx['>']:
