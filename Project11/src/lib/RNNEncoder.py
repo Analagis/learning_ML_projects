@@ -87,7 +87,7 @@ def compute_loss_batch(model, batch_X, criterion):
 def train_rnn_encoder(model, train_loader, valid_loader, pad_idx, epochs=100, lr=0.001, patience=15, suffix=""):
     model = model.to(model.device)
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)  # Игнорируем PAD
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
     
     train_losses, valid_losses = [], []
     best_valid_loss = float('inf')
@@ -183,9 +183,9 @@ def generate_names(model, config, num_names=10, temperature=0.8):
     return names
 
 # Загружаем обученный Encoder
-def load_encoder(vocab_size, checkpoint_path='best_models/best_encoder.pth', hidden_size=256):
+def load_encoder(vocab_size, checkpoint_path='best_models/best_encoder.pth', hidden_size=256, pos_encoding = None):
     """Загружает обученный Encoder"""
-    encoder = RNNEncoder(vocab_size, hidden_size)
+    encoder = RNNEncoder(vocab_size, hidden_size, pos_encoding=pos_encoding)
     encoder = encoder.to(encoder.device)
     checkpoint = torch.load(checkpoint_path)
     encoder.load_state_dict(checkpoint)
