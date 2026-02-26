@@ -1,4 +1,3 @@
-# attention_machine_translation.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,9 +8,10 @@ import numpy as np
 import seaborn as sns
 import torch.nn.functional as F
 import math
+import random
 import time
 
-from utils_models import check_translation, timer
+from utils_models import timer
 
 class BahdanauAttention(nn.Module):
     def __init__(self, hidden_size):
@@ -30,7 +30,7 @@ class BahdanauAttention(nn.Module):
         return context, weights
     
 class AttentionDecoder(nn.Module):
-    def __init__(self, rus_vocab_size, hidden_size=64, eng_max_len=13, pos_encoding=None, max_len=21, multi_head = False, n_heads = 3):
+    def __init__(self, rus_vocab_size, hidden_size=64, eng_max_len=13, pos_encoding=None, max_len=15, multi_head = False, n_heads = 3):
         super().__init__()
         self.hidden_size = hidden_size
         self.eng_max_len = eng_max_len
@@ -54,60 +54,58 @@ class AttentionDecoder(nn.Module):
         self.fc_out = nn.Linear(hidden_size, rus_vocab_size)
 
         self.pe = None
-        if pos_encoding == 'sine':
-            self.pe = self._create_sine_pe(hidden_size, max_len)
-        elif pos_encoding == 'weights':
-            self.pe = nn.Parameter(torch.zeros(max_len, hidden_size, device=self.device))
+        if pos_encoding is not None:
+            # Sinusoidal PE как в Transformer
+            pe = torch.zeros(hidden_size, hidden_size)
+            position = torch.arange(0, hidden_size, dtype=torch.float).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, hidden_size, 2).float() * (-math.log(10000.0) / hidden_size))
+            pe[:, 0::2] = torch.sin(position * div_term)
+            pe[:, 1::2] = torch.cos(position * div_term)
+            if pos_encoding == 'sine':
+                self.pe = pe.unsqueeze(0)
+            else:
+                self.pe = nn.Embedding(hidden_size, hidden_size)
+                with torch.no_grad():
+                    self.pe.weight.copy_(pe)
     
     def forward(self, decoder_input, encoder_outputs, encoder_hidden):
         """
-        decoder_input: [B, rus_seq_len]
+        decoder_input: [B]
         encoder_outputs: [B, eng_seq_len, hidden_size] - ВСЕ скрытые состояния encoder'а!
         encoder_hidden: [1, B, hidden_size] - начальное состояние
         """
         # Embed decoder input
-        embedded = self.embedding(decoder_input)  # [B, rus_seq_len, embed_size]
+        embedded = self.embedding(decoder_input).unsqueeze(1)  # [B, rus_seq_len, embed_size]
 
-        if self.pos_encoding != 'none' and self.pe is not None:
-            pe = self.pe[:decoder_input.size(1)].unsqueeze(0).to(embedded.device)
+        if self.pos_encoding == 'sine' and self.pe is not None:
+            pe = self.pe[:, :1].to(embedded.device)
+            embedded = embedded + pe
+            
+        if self.pos_encoding == 'weights' and self.pe is not None:
+            # Создаём позиции [0,1,2,...] для текущей длины
+            positions = torch.zeros(1, dtype=torch.long,
+                                device=decoder_input.device)  # [1]
+            pe = self.pe(positions).unsqueeze(1)  # [1, seq_len, hidden_size]
+            pe = F.dropout(pe, p=0.1, training=self.training)
             embedded = embedded + pe
         
         # Подготавливаем для attention: decoder_hidden повторяем для всех временных шагов
-        decoder_hidden_expanded = encoder_hidden[-1]  # [B, hidden_size]
+        decoder_hidden_expanded = encoder_hidden[-1].unsqueeze(1)  # [B, 1, H]
         
         # Attention для КАЖДОГО временного шага decoder'а
-        attention_weights, context = self.compute_attention(
+        context, attention_weights = self.attention(
             decoder_hidden_expanded, encoder_outputs
         )
         
         # Конкатенируем embedded + context
-        gru_input = torch.cat([embedded, context.unsqueeze(1).expand(-1, embedded.size(1), -1)], dim=2)
+        gru_input = torch.cat([embedded, context], dim=2)
         
         # GRU forward
         gru_output, hidden = self.gru(gru_input, encoder_hidden)
         
         # Выход
-        logits = self.fc_out(gru_output)  # [B, rus_seq_len, rus_vocab]
-        return logits, hidden, attention_weights
-    
-    def compute_attention(self, decoder_hidden, encoder_outputs):
-        """
-        Вычисляет attention weights между decoder_hidden и encoder_outputs
-        decoder_hidden: [B, hidden_size]
-        encoder_outputs: [B, eng_seq_len, hidden_size]
-        """
-        # BahdanauAttention ожидает query [B, 1, H] и keys [B, S, H]
-        query = decoder_hidden.unsqueeze(1)          # [B, 1, H]
-
-        context, attn_weights = self.attention(
-            query=query,
-            keys=encoder_outputs
-        )
-        
-        attention_weights = attn_weights.squeeze(1)  # [B, eng_seq_len]
-        context = context.squeeze(1)                 # [B, hidden_size]
-
-        return attention_weights, context
+        logits = self.fc_out(gru_output.squeeze(1))  # [B, rus_seq_len, rus_vocab]
+        return logits, hidden, attention_weights.squeeze(1)
     
     def _create_sine_pe(self, d_model, max_len):
         pe = torch.zeros(max_len, d_model)
@@ -117,41 +115,6 @@ class AttentionDecoder(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         return pe
-    
-    def translate(self, encoder, eng_name_indices, rus_char2idx, rus_idx2char, encoder_outputs=None, max_len=30):
-        """Детерминированный перевод с attention"""
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Encode
-        eng_tensor = torch.tensor([eng_name_indices], dtype=torch.long, device=device)
-        encoder_hidden = encoder.get_encoder_state(eng_tensor)  # [1, 1, hidden]
-        
-        # Получаем encoder_outputs (ВСЕ состояния!)
-        with torch.no_grad():
-            embedded = encoder.embedding(eng_tensor)
-            encoder_outputs_full, _ = encoder.gru(embedded)
-        
-        # Decoder
-        sos_idx = rus_char2idx['<']
-        input_token = torch.tensor([[sos_idx]], device=device)
-        generated = [sos_idx]
-        
-        for _ in range(max_len):
-            logits, hidden, attention_weights = self(
-                input_token, encoder_outputs_full, encoder_hidden
-            )
-            next_token = torch.argmax(logits[0, 0, :], dim=-1).item()
-            
-            if next_token == rus_char2idx['>']:
-                break
-                
-            generated.append(next_token)
-            input_token = torch.tensor([[next_token]], device=device)
-            encoder_hidden = hidden
-        
-        translation = ''.join([rus_idx2char[idx] for idx in generated[1:] 
-                             if idx != rus_char2idx['.']])
-        return translation
     
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_size, hidden_size, n_heads=3, dropout=0.1, device='cpu'):
@@ -209,26 +172,54 @@ class MultiHeadAttention(nn.Module):
         
         return output, attn_weights
 
-def compute_loss(decoder, encoder, batch_X, batch_y, criterion, encoder_method='get_encoder_outputs'):
-    """
-    Вычисляет loss для одного батча (train/val).
-    """
-    encoder_outputs = encoder.get_encoder_outputs(batch_X)
-    encoder_hidden = encoder.get_encoder_state(batch_X)
+def compute_loss(decoder, encoder, batch_X, batch_y, criterion, config, tf_ratio = 1):
+    """Teacher forcing ПОШАГОВО для attention decoder"""
+    device = batch_X.device
+    batch_size = batch_X.size(0)
     
-    decoder_input = batch_y[:, :-1]   # [B, rus_len-1]
-    decoder_target = batch_y[:, 1:]   # [B, rus_len-1]
+    # Encode
+    encoder_outputs = encoder.get_encoder_outputs(batch_X)  # [B, eng_len, H]
+    encoder_hidden = encoder.get_encoder_state(batch_X)     # [1, B, H]
     
-    logits, _, _ = decoder(decoder_input, encoder_outputs, encoder_hidden)
-    logits = logits.reshape(-1, logits.size(-1))
-    targets = decoder_target.reshape(-1)
+    decoder_input = torch.full((batch_size,), config['sos_idx'], device=device, dtype=torch.long)
     
-    loss = criterion(logits, targets)
+    total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+    step_count = 0
+    
+    # ПОШАГОВО через target sequence
+    for t in range(1, batch_y.size(1)):
+        target_token = batch_y[:, t]  # [B]
+
+        if (target_token == config['pad_idx']).all():  # токены в батче PAD
+            break
+
+        # Forward ОДНОГО шага
+        logits, decoder_hidden, _ = decoder(
+            decoder_input, encoder_outputs, encoder_hidden
+        )  # logits: [B, vocab]
         
-    return loss
+        # Loss для ЭТОГО шага
+        step_loss = criterion(logits, target_token)
+        
+        if torch.isnan(step_loss) or torch.isinf(step_loss):
+            continue
+
+        total_loss = total_loss + step_loss
+        step_count += 1
+        
+        use_teacher_forcing = random.random() < tf_ratio
+
+        if use_teacher_forcing:
+            decoder_input = target_token              # ground truth
+        else:
+            decoder_input = torch.argmax(logits, dim=-1)  # модельное предсказание
+
+        encoder_hidden = decoder_hidden  # обновляем hidden!
+       
+    return total_loss / step_count if step_count > 0 else torch.tensor(0.0, device=device)
 
 @timer
-def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train_t, X_valid_t, epochs=100, lr=0.0003, patience=15, suffix="", **kwargs):
+def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train_t, X_valid_t, epochs=100, lr=0.001, patience=15, suffix="", teacher_forcing_ratio=1.0, **kwargs):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     encoder.to(device)
     encoder.train()
@@ -238,7 +229,7 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
     decoder = AttentionDecoder(config['rus_vocab_size'], hidden_size=encoder.hidden_size, **kwargs).to(device)
     
     criterion = nn.CrossEntropyLoss(ignore_index=config['pad_idx'])
-    optimizer = optim.Adam(decoder.parameters(), lr=lr)
+    optimizer = optim.Adam(decoder.parameters(), lr=lr, weight_decay=1e-4)
     
     train_losses, valid_losses = [], []
     best_valid_loss = float('inf')
@@ -251,16 +242,17 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
         decoder.train()
         train_loss = 0
         num_batches = 0
+        tf_ratio = max(0.0, teacher_forcing_ratio * (1 - epoch / epochs))
         
         for batch_X, batch_y in train_loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             
             optimizer.zero_grad()
             
-            loss = compute_loss(decoder, encoder, batch_X, batch_y, criterion)
-
+            loss = compute_loss(decoder, encoder, batch_X, batch_y, criterion, config, tf_ratio)
+            
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.5)
+            torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)
             optimizer.step()
             
             train_loss += loss.item()
@@ -276,7 +268,7 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
             for batch_X, batch_y in valid_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 
-                loss = compute_loss(decoder, encoder, batch_X, batch_y, criterion)
+                loss = compute_loss(decoder, encoder, batch_X, batch_y, criterion, config)
 
                 valid_loss += loss.item()
                 num_valid_batches += 1
@@ -295,10 +287,10 @@ def train_attention_decoder(encoder, train_loader, valid_loader, config, X_train
             decoder.eval()
             
             # Берем первые 5 примеров из train
-            check_translation(X_train_t[:5], config['eng_char2idx'], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
+            check_translation(X_train_t[:5], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
             
             print("=== VALID SET ===")
-            check_translation(X_valid_t[:5], config['eng_char2idx'], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
+            check_translation(X_valid_t[:5], config['eng_idx2char'], decoder, encoder, config['rus_char2idx'], config['rus_idx2char'], config['y_max_len'], n=5)
             print("-" * 50)
             
             # Возвращаем в train режим
@@ -378,7 +370,7 @@ def plot_attention_heatmap(eng_name, rus_name, attention_weights_list, max_lengt
     plt.tight_layout()
     plt.show()
 
-def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_char2idx, rus_idx2char, max_len=21):
+def translate(encoder, decoder, eng_name_indices, eng_idx2char, rus_char2idx, rus_idx2char, max_len=15):
     """Визуализация attention weights для одного имени"""
     device = next(decoder.parameters()).device
     encoder.eval()
@@ -391,28 +383,21 @@ def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_ch
     
     # Генерируем перевод
     sos_idx = rus_char2idx['<']
-    input_token = torch.tensor([[sos_idx]], device=device)
+    input_token = torch.tensor([sos_idx], device=device)
     generated_tokens = [sos_idx]
     attention_weights_list = []
     
     for _ in range(max_len):
         logits, hidden, attn_weights = decoder(input_token, encoder_outputs, encoder_hidden)
-        next_token = torch.argmax(logits[0, 0, :], dim=-1).item()
+        next_token = torch.argmax(logits[0], dim=-1).item()
         
-        current_weights = torch.zeros(max_len, device=device)
-        actual_eng_len = len(eng_name_indices)
-        if attn_weights.size(1) >= actual_eng_len:
-            current_weights[:actual_eng_len] = attn_weights[0, :actual_eng_len]
-        else:
-            current_weights[:attn_weights.size(1)] = attn_weights[0, :]
-
         attention_weights_list.append(attn_weights[0].cpu().detach().numpy())  # [eng_len]
         generated_tokens.append(next_token)
         
         if next_token == rus_char2idx['>']:
             break
             
-        input_token = torch.tensor([[next_token]], device=device)
+        input_token = torch.tensor([next_token], device=device)    # [1]
         encoder_hidden = hidden
     
     # Русское имя (без SOS)
@@ -421,3 +406,12 @@ def visualize_attention(encoder, decoder, eng_name_indices, eng_idx2char, rus_ch
     
     return eng_name, rus_name, attention_weights_list
 
+def check_translation(X_test_t, eng_idx2char, decoder, encoder, 
+                     rus_char2idx, rus_idx2char, y_max_len, n):
+    translations = []
+    for i in range(n):
+        eng_indices = [idx.item() for idx in X_test_t[i]]
+        eng_name, rus_name, _ = translate(encoder, decoder, eng_indices, eng_idx2char, rus_char2idx, rus_idx2char, max_len=y_max_len)
+        translations.append(f"{eng_name.replace('.', ''):10s}→{rus_name}")
+    print(" | ".join(translations))
+    

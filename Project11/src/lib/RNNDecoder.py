@@ -13,7 +13,7 @@ from utils_models import check_translation, timer
 
 
 class RNNDecoder(nn.Module):
-    def __init__(self, rus_vocab_size, hidden_size=64, pos_encoding=None, max_len=21):
+    def __init__(self, rus_vocab_size, hidden_size=64, pos_encoding=None, max_len=15):
         super().__init__()
         self.hidden_size = hidden_size
         self.pos_encoding = pos_encoding
@@ -127,7 +127,7 @@ def train_decoder(encoder, train_loader, valid_loader, config,
     decoder = RNNDecoder(config['rus_vocab_size'], **kwargs).to(device)
     
     criterion = nn.CrossEntropyLoss(ignore_index=config['pad_idx'])
-    optimizer = optim.Adam(decoder.parameters(), lr=lr)  # Только decoder
+    optimizer = optim.Adam(decoder.parameters(), lr=lr, weight_decay=1e-4)  # Только decoder
     
     train_losses, valid_losses = [], []
     best_valid_loss = float('inf')
