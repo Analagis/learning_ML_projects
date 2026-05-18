@@ -11,3 +11,11 @@
 ## Project 6 dedicated to unsupervised learning tasks, focusing on dimensionality reduction.
 
 ## Project 7 dedicated to different clustering algorithms.
+
+## Project 9 dedicated to image recognition using convolutional neural networks (LeNet-5 and ResNet-like backbones).
+
+## Project 10 dedicated to recurrent neural networks (RNN, GRU, LSTM) for dual tasks of name generation and gender classification.
+
+## Project 11 dedicated to a sequence-to-sequence name translation pipeline from English to Russian using RNN-based models, evolving from vanilla encoder-decoder to attention mechanisms and positional encodings.
+
+## Project 12 dedicated to  generative deep learning with Variational Autoencoders (VAE) and Generative Adversarial Networks (GAN) for MNIST digit generation.
